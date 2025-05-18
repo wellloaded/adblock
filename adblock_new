@@ -1,26 +1,25 @@
-#!/bin/sh
+#!/bin/sh -x
 # Adblock (a.k.a. DNS-filtering) FreshTomato GUI back-end
-
 
 . nvram_ops
 
-ver="v2.72b - 04/23" # rs232
+ver="v2.73a - 05/25" # rs232
 PID=$$
 pidfile="/var/run/adblock.pid"
 export PATH=/bin:/usr/bin:/sbin:/usr/sbin:/home/root
 pre=$(date +%s)
-alias only="sed -e 's/^[ \t]*//' | grep -Ev '^($|#|!)' | sort"
+alias only="sed -e 's/^[ \t]*//' -e 's/[#|!].*//' | grep -Ev '^($|#|!)' | sort"
 
 hashblack() {
 	hb="=B+ $(NG adblock_blacklist | tr '>' '\n' | grep -E ^1 | cut -d/ -f3- | sort | cut -f1 -d'<') $(NG adblock_enable) $(NG adblock_path) $(NG adblock_limit) =BC+ $(NG adblock_blacklist_custom | only ) =BCF+"
-	for i in $(NG adblock_blacklist_custom | only | grep -E ^/ ); do hb="$hb $(cat ${i} | only )"; done
-	echo $hb | tr " " "\n" | grep -Ev '^($|#|!)'
+	for i in $(NG adblock_blacklist_custom | only | grep -E '^\s*/' ); do hb="$hb $(cat ${i} | only )"; done
+	echo "${hb}" | tr " " "\n" | grep -Ev '^($|#|!)'
 }
 
 hashwhite() {
 	hw="=W+ $(NG adblock_whitelist | only ) =WF+"
-	for i in $(NG adblock_whitelist | only | grep -E ^/ ); do hw="$hw $(cat ${i} | only)"; done
-	echo $hw | tr " " "\n" | grep -Ev '^($|#|!)'
+	for i in $(NG adblock_whitelist | only | grep -E '^\s*/' ); do hw="$hw $(cat ${i} | only)"; done
+	echo "${hw}" | tr " " "\n" | grep -Ev '^($|#|!)'
 }
 
 [ $(NG adblock_logs | wc -c) -gt 0 ] && { LOGL=$(NG adblock_logs); } || { LOGL=3; }
@@ -35,16 +34,19 @@ DNS_TIME="/tmp/dnsmasq.time"
 
 dnsrestart() { pr=$(cat /proc/uptime | cut -f1 -d' ') ; service dnsmasq restart &>/dev/null && { echo $(cat /proc/uptime | cut -f1 -d ' ' ) $pr | awk '{print $1 - $2 "s"}' > ${DNS_TIME} ; [ ${LOGL} -ge 6 -a -f ${DNS_TIME} ] && { sleep 1; logi "dnsmasq restart time = $(cat $DNS_TIME)" ;} ;} ;}
 
+hold=30
 ( [ -f $pidfile ] && [ $# -eq 0 -o $1 == start -o $1 == update ] ) && {
-	# If the pidfile is older than $hold min this is very likely and issue = remove it.
-	[ $((($(date +%s) - $(date -r ${pidfile} +%s))/60)) -gt $hold ] && {
-		rm -f $pidfile
-		for process in $(ps | grep [a]dblock | grep -v "status\|$PID" | awk '{print $1}'); do (kill -9 $process) &>/dev/null ; done
-		dnsrestart
-	}
-	logn "Adblock/DNS-filtering is already loading. Skipping call..."
-	echo "Adblock/DNS-filtering is already loading. Skipping call..."
-	exit
+    # If the pidfile is older than $hold min this is very likely and issue = remove it.
+    [ $((($(date +%s) - $(date -r ${pidfile} +%s))/60)) -gt $hold ] && {
+        echo "Terminating stuck Adblock" | tee /dev/tty | logn
+        rm -f $pidfile
+        for process in $(ps | grep [a]dblock | grep -v "status\|$PID" | awk '{print $1}'); do (kill -9 $process) &>/dev/null ; done
+        dnsrestart
+    }
+    if [ -f $pidfile ]; then
+        echo "Adblock/DNS-filtering is already loading. Skipping call..."  | tee /dev/tty | logn
+        exit
+    fi
 }
 
 ( ls -1tr /tmp/adblock.debug.output.* | head -n -10 | while read file; do rm -f $file; done ) 2>/dev/null # Keep maximum 10 debug files
@@ -52,11 +54,10 @@ dnsrestart() { pr=$(cat /proc/uptime | cut -f1 -d' ') ; service dnsmasq restart 
 USERAGENT="Mozilla/5.0 (X11; Linux x86_64; rv:10.0) Gecko/20100101 Firefox/109.0"
 [ $LOGL -eq 7 ] && Q=" " || Q="-q"
 alias yget="wget --no-check-certificate -T 15 $Q -U \"$USERAGENT\" --header \"Cache-Control: no-cache\""
-
 alias domain="sed 's/[#!].*//' | grep -Eo '((([a-zA-Z]{1,2})|([0-9]{1,2})|([a-zA-Z0-9]{1,2})|([a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]))\.)+[a-zA-Z]{2,6}'| grep -vEi '\.gif$|\.jpe?g$|\.png$|\.jsp?$|\.css$|\.ico$|\.aspx?$|\.php$|\.cer$|\.cfm$|\.cgi$|\.x?html?$|\.py$|\.rss$|\.vb$|\.sh$|\.json$'"
 alias notin="grep -Ev '^#.*|^!.*|^::|^\s*?$|^([a-f0-9:]+:+)+[a-f0-9]+'"
 alias number="sed ':a;s/\B[0-9]\{3\}\>/,&/;ta'"
-hold=30
+
 [ $(NG adblock_path | wc -c) -gt 0 ] && {
 	NG adblock_path | grep -Eq '^/jffs' && logw "Custom path is pointing to JFFS, this is not ideal. Consider using alternative storages like USB/CIFS/etc."
 	DPATH="$(NG adblock_path | sed 's/\/$//')/adblock" ; mkdir -p "$DPATH"; } || DPATH="/etc"
@@ -101,6 +102,18 @@ itest=0
 current=$(echo $ver | cut -c-6)
 UURL="https://bitbucket.org/rs232-/freshtomato-arm/downloads/adblock.rs232"
 extra="$(NG adblock_path | sed 's/\/$//')/adblock.extra" ; [ -s "$extra" ] && { [ $(ls -l $extra | cut -c4,7,10) != "xxx" ] && { chmod +x $extra ;} ; . "$extra"; }
+
+itest() {
+		itest=0
+		[[ $(NP mwan_ckdst) -eq 1 && $(NG mwan_ckdst | domain | wc -l) -gt 0 ]] && { itarget=$(NG mwan_ckdst | domain | head -1); } || { itarget="8.8.8.8"; }
+			while ! ( traceroute -n -m10 -w1 -q1 -z1 "$itarget" >/dev/null 2>&1 && [ $(date +%Y) -gt 2023 ] ); do { 
+				[ $itest -eq 0 ] && echo "Waiting for Internet connectivity..." | tee /dev/tty | logn
+				itest=$((itest+1))
+				sleep 10
+				pre=$(date +%s); 
+			} done
+			[ $itest -gt 0 ] && echo "...restored Internet connectivity" | tee /dev/tty | logn
+}
 
 checkList() { # 0=fetch_local / 1=download / 2=issues / 3=duplicated
 	urinameh=$(echo "${4}".header)
@@ -192,8 +205,7 @@ download() {
 	restb=0
 	restw=0
 	if [ ! -s $CHK_FILE -o $( [ -s ${ADHEAD} ] && { cat ${ADHEAD} | grep -Ev ' 0$' | wc -l; } || echo 1 ) -gt 0 ]; then
-		logo "Clear run or change in the lists detected. Executing full run."
-		echo "Clear run or change in the lists detected. Executing full run."
+		echo "Clear run or change in the lists detected. Executing full run." | tee /dev/tty | logo
 		rm -f ${VRFY}
 	elif [ $(hashblack | md5sum | awk '{print $1}') != $([ -s ${CHK_FILE} ] && { cat ${CHK_FILE} | grep md5black | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) -o $(hashwhite | md5sum | awk '{print $1}') != $([ -s ${CHK_FILE} ] && { cat ${CHK_FILE} | grep md5white | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) ]; then
 			# Modification ot the blacklist part?
@@ -201,7 +213,6 @@ download() {
 				hashblack | grep -A99999 =BC+ | grep -v ^= >/tmp/adblock.nowb
 				cat /tmp/adblock.time | grep -A99999 =BC+ | grep -B99999 =W+ | grep -v ^= >/tmp/adblock.thenb
 				# Something removed? Is so skip
-				# sleep 600
 				grep -qxvFf /tmp/adblock.nowb /tmp/adblock.thenb && {
 					restb=1
 					} || {
@@ -228,28 +239,24 @@ download() {
 				}
 	# No change of sort? Skip!
 	else
-		logo "There's no change of config and all the enabled lists are updated. Skipping..."
-		echo "There's no change of config and all the enabled lists are updated. Skipping..."
+		echo "There's no change of config and all the enabled lists are updated. Skipping..." | tee /dev/tty | logi
 		logi "$FINAL = $(wc -l < $FINAL|number) lines in $(wc -c < $FINAL|number) Bytes."
 		rm -f ${VRFY}
 		adExit 5
 	fi
 	# Crunch the results
 	if [ $restb -eq 1 -o $restw -eq 1 ]; then
-			logi "Disruptive change of config detected. Executing full-run."
-			echo "Disruptive change of config detected. Executing full-run."
+			echo "Disruptive change of config detected. Executing full-run." | tee /dev/tty | logi
 			rm -f /tmp/adblock.now* /tmp/adblock.then* 2>/dev/null
 	elif [ $restb -eq 2 -o $restw -eq 2 ]; then
 		[ $restb -eq 2 ] && {
 			for i in $(grep -xvFf /tmp/adblock.thenb /tmp/adblock.nowb); do
-				logi "Addition in the blacklist_custom detected. Executing quick-run."
-				echo "Addition in the blacklist_custom detected. Executing quick-run."
+				echo "Addition in the blacklist_custom detected. Executing quick-run." | tee /dev/tty | logi
 				grep -q "/$i/" $FINAL || echo "local=/$i/" >> $FINAL; done
 			}
 		[ $restw -eq 2 ] && {
 			for i in $(grep -xvFf /tmp/adblock.thenw /tmp/adblock.noww); do
-				logi "Addition in the whitelist detected. Executing quick-run."
-				echo "Addition in the whitelist detected. Executing quick-run."
+				echo "Addition in the whitelist detected. Executing quick-run." | tee /dev/tty | logi
 				sed -i "/local=\/$i\//d" $FINAL; done
 			}
 		rm -f ${VRFY}
@@ -522,8 +529,8 @@ parsefile() {
 
 cronAdd() {
 	cru l | grep -q adblockJob || {
-		MINS=$((2 + $RANDOM % 56)) # Between 02 and 58min for each hour
-		HOUR=$((3 + $RANDOM % 2))  # Between 03:02 and 05:58
+		MINS=$((2 + $RANDOM % 56)) # Between 02 and 57min for each hour
+		HOUR=$((3 + $RANDOM % 2))  # Between 03:02 and 04:57
 		cru a adblockJob "$MINS $HOUR * * * /usr/sbin/adblock update"
 		logi "Added cron job for automatic updates"
 	}
@@ -537,11 +544,11 @@ cronDel() {
 }
 
 countdownDnsmasq() {
-	c=0; while [ "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" != "nobody" -a $c -lt 10 ]; do
+	c=0; while [ "$(ps | grep "^$(cat /var/run/dnsmasq.pid).*root.*dnsmasq.*async$" | wc -l)" -gt 0 -a $c -lt 10 ]; do
 		c=$((c+1)); sleep 2
 	done
-	[ ! -z "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" -a "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" == "nobody" ] && echo 0 || echo 1 ;
-}
+	ps | grep -v "^$(cat /var/run/dnsmasq.pid).*nobody.*dnsmasq.*async$" && echo 0 || echo 1
+} 
 
 safeDnsmasqRestart() {
 	[ "$1" -eq 0 ] && { # Run only for update
@@ -564,8 +571,7 @@ safeDnsmasqRestart() {
 	dnsrestart
 	# Case C = dnsmasq didn't change ownership to nobody within 20 secs. Attempt a file trim:
 	[ $(countdownDnsmasq) -eq 1 ] && {
-		i=0; while [ ! -z "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" -a "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" != "nobody" -a $i -lt 10 ]; do
-			# Attempts the trim maximum 10 times (up to 50% of the file)
+		i=0; while [ "$(ps | grep "^$(cat /var/run/dnsmasq.pid).*root.*dnsmasq.*async$" | wc -l)" -eq 1 -a $i -lt 10 ]; do 			# Attempts the trim maximum 10 times (up to 50% of the file)
 			i=$((i+1))
 			SIZEE=$(wc -l < $FINAL)
 			LINES=$((SIZEE-TRIM))
@@ -657,8 +663,7 @@ adExit() {
 
 # Skip execution (and stop adblock if running) if internal DNS is disabled
 [ $(NG dhcpd_dmdns) -eq 0 -a $ENABLE -eq 1 ] && {
-	loge "Internal DNS is disabled! Adblock/DNS-filtering is enabled but cannot run. Exiting..."
-	echo "Internal DNS is disabled! Adblock/DNS-filtering is enabled but cannot run. Exiting..."
+	echo "Internal DNS is disabled! Adblock/DNS-filtering is enabled but cannot run. Exiting..." | tee /dev/tty | loge
 	erroradd
 	cronDel
 	adExit 2
@@ -740,7 +745,7 @@ Adblock calls today = <b>$(grep -E $(date +%b)" "+$(date +%d|sed 's/^0*//') /var
 Adblock config loaded = $(echo $(grep -q 'conf-file=/etc/dnsmasq.adblock' /etc/dnsmasq.conf && echo "<b>Yes 🆗</b>" || echo "<b>No ⛔</b>"))<br>
 Adblock script activity = $(echo $([ -f "/var/run/adblock.pid" ] && { [ -f ${VRFY} ] && echo "👁️ <b>Checking...<img src=\"spin.gif\" heigh=\"8px\" width=\"8px\"></b>" || echo "🌀 <b>Loading... $([ -s $TM ] && { wc -l < $TM | number ;}) domains / $([ -s $TM ] && { wc -c < $TM | number ;} ) Bytes <img src=\"spin.gif\" heigh=\"8px\" width=\"8px\"></b>" ;} || echo "<b>idle</b>"))<br>"
 	[ -s "$FINAL" -a $(grep 'conf-file=/etc/dnsmasq.adblock' /etc/dnsmasq.conf | wc -l) -eq 1 ] && {
-		filp=$(($(wc -c < $FINAL) * 100 / $([ $(echo $sizeLimit | wc -c 2>/dev/null ) -gt 0 ] && echo $sizeLimit || echo 99999999)))
+		filp=$(awk -v finalSize="$(wc -c < "$FINAL")" -v sizeLimit="${sizeLimit:-99999999}" 'BEGIN { print int((finalSize * 100) / sizeLimit) }')
 		lre=$(grep 'error' $ADHELPER | awk '{print $2}')
 		echo "Last run errors = <b>$lre"
 		[ $lre -gt 0 ] && echo " ⚠️"
@@ -759,8 +764,7 @@ elif [ "$1" == "reset" ]; then
 	setlimit
 	exit
 elif [ "$1" == "clear" -o "$1" == "clean" ]; then
-	logi "Clearing up all the file relevant to Adblock/DNS-filtering from the filesystem."
-	echo "Clearing up all the file relevant to Adblock/DNS-Filtering from the filesystem."
+	echo "Clearing up all the file relevant to Adblock/DNS-Filtering from the filesystem." | tee /dev/tty | logi
 	adExit 4
 elif [ "$1" == "test" ]; then
 	[ $# -eq 2 -a $(echo $2 | domain | wc -l) -gt 0 ] && {
@@ -855,18 +859,15 @@ elif [ "$1" == "trace" ]; then
 	exit
 elif [ "$1" == "stop" ]; then
 	cronDel
-	logo "Stopping Adblock/DNS-filtering..."
-	echo "Stopping Adblock/DNS-filtering..."
+	echo "Stopping Adblock/DNS-filtering..." | tee /dev/tty | logo
 	adExit 1
 elif [ "$1" == "enable" ]; then
-	logo "️ Enabled Adblock/DNS-filtering..."
 	NS adblock_enable=1 ; NC
-	echo -e "Adblock has been enabled (adblock set adblock_enable=1)"
+	echo -e "Adblock has been enabled (adblock set adblock_enable=1)" | tee /dev/tty | logo
 	exit
 elif [ "$1" == "disable" ]; then
-	logo "Disabled Adblock/DNS-filtering..."
 	NS adblock_enable=0 ; NC
-	echo -e "Adblock has been disabled (adblock set adblock_enable=0)"
+	echo -e "Adblock has been disabled (adblock set adblock_enable=0)" | tee /dev/tty | logo
 	exit
 elif [ "$1" == "snapshot" ]; then
 	now=$(date +%s)
@@ -890,27 +891,18 @@ elif [ "$1" == "snapshot" ]; then
 	ls -l /var/run/ | grep -E '.*adblock.pid$|.*dnsmasq.pid$'
 	) >> /tmp/adblock.snapshot.$now 2>/dev/null
 
-	echo -e "Debug output saved to file. Use cat /tmp/adblock.snapshot.$now to view"
-	logo "Snapshot taken and saved in /tmp/adblock.snapshot.$now"
+	echo -e "Debug output saved to file. Use cat /tmp/adblock.snapshot.$now to view" | tee /dev/tty | logo
 	exit
 elif [ "$1" == "update" -o "$1" == "start" -o $# -eq 0 ]; then
 	if [ "$ENABLE" -eq "1" ]; then {
 		[ ! -f $pidfile ] && echo $PID > $pidfile
-		[ $(NG adblock_blacklist | tr ">" "\n" | grep ^1 | wc -l) -gt 0 ] && {	
-		[[ $(NP mwan_ckdst) -eq 1 && $(NG mwan_ckdst | tr ',' '\n' | domain | wc -l) -gt 0 ]] && { itarget=$(NG mwan_ckdst | tr ',' '\n' | domain | head -1); } || { itarget="google.com"; }
-		while ! ( traceroute -n -m10 -w1 -q1 -z1 "$itarget" >/dev/null 2>&1 && [ $(date +%Y) -gt 2023 ] ); do { 
-				[ $itest -eq 0 ] && echo "Waiting for Internet connectivity..." | tee /dev/tty | logn
-				itest=$((itest+1))
-				sleep 10
-				pre=$(date +%s); 
-			} done
-			[ $itest -gt 0 ] && echo "...restored Internet connectivity" | tee /dev/tty | logn
+		[ $(NG adblock_blacklist | tr ">" "\n" | grep ^1 | wc -l) -gt 0 ] && {
+			itest
 			}
 		[ -s "$FINAL" ] && {
 			HOLD_LEFT=$(( $hold - ($(date +%s) - $(date -r "$FINAL" +%s)) /60))
 			[ "$HOLD_LEFT" -lt $hold -a "$HOLD_LEFT" -gt 0 -a $(hashblack | md5sum | awk '{print $1}') == $([ -s "$CHK_FILE" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo "0") -a $(hashwhite | md5sum | awk '{print $1}') == $([ -s "$CHK_FILE" ] && { cat ${CHK_FILE} | grep md5white | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo "0") -a $( [ -s ${ADHEAD} ] && { cat ${ADHEAD} | grep -Ev ' 0$' | wc -l; } || echo 1 ) -eq 0 ] && {
-				logw "The last update was performed less then ${hold}min ago (${HOLD_LEFT}min left) and no modification to the config have been detected since. Skipping script execution for now..."
-				echo "The last update was performed less then ${hold}min ago (${HOLD_LEFT}min left) and no modification to the config have been detected since. Skipping script execution for now..."
+				echo "The last update was performed less then ${hold}min ago (${HOLD_LEFT}min left) and no modification to the config have been detected since. Skipping script execution for now..." | tee /dev/tty | logw
 				adExit 5
 			}
 		}
@@ -937,8 +929,7 @@ elif [ "$1" == "update" -o "$1" == "start" -o $# -eq 0 ]; then
 		cronAdd
 	}
 	elif [ "$ENABLE" -eq "0" ]; then
-		logw "Adblock/DNS-filtering is disabled! Exiting..."
-		echo "Adblock/DNS-filtering is disabled! Exiting..."
+		echo "Adblock/DNS-filtering is disabled! Exiting..." | tee /dev/tty | logw
 		adExit 3
 	fi
 else
