@@ -723,20 +723,15 @@ if [ "$1" == "status" ]; then
 elif [ "$1" == "status-gui" ]; then
 	restarts=$(grep -E $(date +%b)" "+$(date +%d|sed 's/^0*//') /var/log/messages | grep -E '.*dnsmasq\[.*exiting' | wc -l )
 	[ ! -z $sizeLimit ] && max=$(echo $sizeLimit | number ) || max="Calculated at the next run"
-eval $(awk '
-  /^MemTotal:/ { ramt = $2 }
-  /^Buffers:/ { ramb = $2 }
-  /^Cached:/ { ramc = $2 }
-  /^MemFree:/ { free = $2 }
-  /^SReclaimable:/ { srecl = $2 }
-  END {
-    ramu = ramt - free - ramb - ramc - srecl;
-    rampu = int((ramu * 100) / ramt);
-    rampc_percent = int((ramc * 100) / ramt);
-    ramb_percent = int((ramb * 100) / ramt);
-    printf "ramt=%s ramu=%s rampu=%s rampc=%s ramb=%s", ramt, ramu, rampu, rampc_percent, ramb_percent;
-  }
-' /proc/meminfo)
+	ramt=$(grep '^MemTotal:' /proc/meminfo | awk '{print $2}')
+	ramb=$(grep '^Buffers:' /proc/meminfo | awk '{print $2}')
+	ramc=$(grep '^Cached:' /proc/meminfo | awk '{print $2}')
+	free=$(grep '^MemFree:' /proc/meminfo | awk '{print $2}')
+	srecl=$(grep '^SReclaimable:' /proc/meminfo | awk '{print $2}')
+	ramu=$((ramt - free - ramb - ramc - srecl))
+	rampu=$(( (ramu * 100) / ramt ))
+	rampc=$(( (ramc * 100) / ramt ))
+	ramb=$(( (ramb * 100) / ramt ))
 	echo -e "Version: ${ver:0:6}<br>
 System Load = $(cat /proc/loadavg | awk '{print "<b>"$1" / "$2" / "$3"</b>"}')<br>
 Ram Used/Cache/Buffer / Total = <b>${rampu}% ~ $(echo $ramu | number)</b>/$(echo $ramc | number)/$(echo $ramb | number)<b> / $(echo $ramt | number) KBytes</b><br>
