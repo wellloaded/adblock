@@ -731,7 +731,7 @@ elif [ "$1" == "status-gui" ]; then
 	ramu=$((ramt - free - ramb - ramc - srecl))
 	rampu=$(( (ramu * 100) / ramt ))
 	rampc=$(( (ramc * 100) / ramt ))
-	ramb=$(( (ramb * 100) / ramt ))
+	rampb=$(( (ramb * 100) / ramt ))
 	echo -e "Version: ${ver:0:6}<br>
 System Load = $(cat /proc/loadavg | awk '{print "<b>"$1" / "$2" / "$3"</b>"}')<br>
 Ram Used/Cache/Buffer / Total = <b>${rampu}% ~ $(echo $ramu | number)</b>/$(echo $ramc | number)/$(echo $ramb | number)<b> / $(echo $ramt | number) KBytes</b><br>
