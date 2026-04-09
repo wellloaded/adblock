@@ -28,6 +28,8 @@ hashwhite() {
 	echo $hw | tr " " "\n" | grep -Ev '^($|#|!)'
 }
 
+md5file() { md5sum | awk '{print $1}'; }
+
 [ $(NG adblock_logs | wc -c) -gt 0 ] && { LOGL=$(NG adblock_logs); } || { LOGL=3; }
 alias logo='logger -p NOTICE -t adblock[$PID]'
 [ $LOGL -ge 7 ] && alias logd='logger -p DEBUG -t adblock[$PID]' || alias logd=':'
@@ -103,15 +105,6 @@ WHITISH_FILE="$OPS/adblock.whitish"
 WHITIS_FILE="$OPS/adblock.whitis"
 DNSMASQ_TEST="$OPS/adblock.dnsmasq.test"
 SNAPSHOT_PREFIX="$OPS/adblock.snapshot"
-black_hash() { hashblack | md5sum | awk '{print $1}'; }
-white_hash() { hashwhite | md5sum | awk '{print $1}'; }
-saved_hash() { [ -s "$CHK_FILE" ] && awk -v k="$1" '$2 == k {print $1; exit}' "$CHK_FILE" || echo 0; }
-pending_headers() { [ -s "$ADHEAD" ] && awk 'NR > 1 && $4 != 0 {c++} END {print c+0}' "$ADHEAD" || echo 1; }
-quickblack() { hashblack | awk '/^=BC\+/{on=1;next} on && $0 !~ /^=/{print}'; }
-saved_quickblack() { [ -s "$CHK_FILE" ] && awk '/^=BC\+/{on=1;next} /^=W\+/{exit} on && $0 !~ /^=/{print}' "$CHK_FILE"; }
-quickwhite() { hashwhite | awk '/^=W\+/{on=1;next} on && $0 !~ /^=/{print}'; }
-saved_quickwhite() { [ -s "$CHK_FILE" ] && awk '/^=W\+/{on=1;next} on && $0 !~ /^=/{print}' "$CHK_FILE"; }
-adhead_result() { awk -v h="$1" '$3 == h {print $4; exit}' "$ADHEAD"; }
 last_trace() { ls -1tr $DEBUG_GLOB 2>/dev/null | tail -1; }
 CHGCOUNT=0; alias chgcount='CHGCOUNT=$((CHGCOUNT+1))'
 ERRCOUNT=0; alias erroradd='ERRCOUNT=$((ERRCOUNT+1))'
@@ -211,11 +204,11 @@ download() {
 			echo "$COUNT $URL $uriname $listresult" >> $ADHEAD
 		}
 	done
-	pending=$(pending_headers)
-	black_sig=$(black_hash)
-	white_sig=$(white_hash)
-	prev_black_sig=$(saved_hash md5black)
-	prev_white_sig=$(saved_hash md5white)
+	pending=$( [ -s ${ADHEAD} ] && { cat ${ADHEAD} | grep -Ev ' 0$' | wc -l; } || echo 1 )
+	black_sig=$(hashblack | md5file)
+	white_sig=$(hashwhite | md5file)
+	prev_black_sig=$([ -s "${CHK_FILE}" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
+	prev_white_sig=$([ -s "${CHK_FILE}" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
 
 	# Is there a reason to process? If so what?
 	restb=0
@@ -226,8 +219,8 @@ download() {
 	elif [ "$black_sig" != "$prev_black_sig" -o "$white_sig" != "$prev_white_sig" ]; then
 			# Modification ot the blacklist part?
 			[ "$black_sig" != "$prev_black_sig" ] && {
-				quickblack >$NOWB
-				saved_quickblack >$THENB
+				hashblack | grep -A99999 =BC+ | grep -v ^= >$NOWB
+				cat "$CHK_FILE" | grep -A99999 =BC+ | grep -B99999 =W+ | grep -v ^= >$THENB
 				# Something removed? Is so skip
 				# sleep 600
 				grep -qxvFf $NOWB $THENB && {
@@ -242,8 +235,8 @@ download() {
 				}
 			# Modification ot the whitelist part?
 			[ "$white_sig" != "$prev_white_sig" ] && {
-				quickwhite >$NOWW
-				saved_quickwhite >$THENW
+				hashwhite | grep -A99999 =W+ | grep -v ^= >$NOWW
+				cat "$CHK_FILE" | grep -A99999 =W+ | grep -v ^= >$THENW
 				# Something removed? Is so skip
 				grep -qxvFf $NOWW $THENW && {
 					restw=1
@@ -296,7 +289,7 @@ download() {
 		[ "$ENBL" -eq "1" ] && {
 			uriname=$(echo "$URL" | md5sum | awk '{print $1}')
 			logn "[$COUNT][$URL][$uriname] Processing blacklist"
-			listresult=$(adhead_result "$uriname")
+			listresult=$(awk -v h="$uriname" '$3 == h {print $4; exit}' "$ADHEAD")
 			ramresult=$(checkRam $COUNT $URL none $uriname)
 			logd "[$COUNT] Result of checkRam($ramresult) ................ 0=OK / 1=failed"
 			if [ $listresult -eq 0 -a $ramresult -eq 0 ]; then
@@ -739,8 +732,8 @@ status_data() {
 	fi
 	hold_text="Off"
 	if [ -s "$CHK_FILE" -a -s "$FINAL" ]; then
-		black_sig=$(black_hash)
-		prev_black_sig=$(saved_hash md5black)
+		black_sig=$(hashblack | md5file)
+		prev_black_sig=$([ -s "$CHK_FILE" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
 		HOLD_LEFT=$(( $hold - ($(date +%s) - $(date -r "$FINAL" +%s)) /60 ))
 		if [ "$HOLD_LEFT" -le $hold -a "$HOLD_LEFT" -gt 0 -a "$black_sig" == "$prev_black_sig" ]; then
 			hold_text="${HOLD_LEFT} min left"
@@ -813,7 +806,7 @@ if [ "$1" == "status" ]; then
       Calls today = $(grep -E $(date +%b)" "+$(date +%d|sed 's/^0*//') /var/log/messages | grep "Kick off" | wc -l )
          Activity = $([ -f ${pidfile} ] && { [ -f ${VRFY} ] && echo "${f_light_white}Checking...${reset}" || echo "${f_light_white}Running...${reset}" ;} || echo "Idle" )
        Last trace = $([ $LOGL -eq 7 ] && last_trace)
-        Hold-time = $([ -s $CHK_FILE -a -s $FINAL ] && { HOLD_LEFT=$(( ${hold} - ($(date +%s) - $(date -r "$FINAL" +%s)) /60 )) ; [ "$HOLD_LEFT" -le ${hold} -a "$HOLD_LEFT" -gt 0 -a $(hashblack | md5sum | awk '{print $1}') == $(cat ${CHK_FILE} | grep md5black | grep -Eo ^[a-zA-Z0-9]{32}) ] && echo -e "${f_light_white}On${reset} ~ ${HOLD_LEFT}min left" || echo "off" ;} || echo "off" )
+		Hold-time = $([ -s $CHK_FILE -a -s $FINAL ] && { HOLD_LEFT=$(( ${hold} - ($(date +%s) - $(date -r "$FINAL" +%s)) /60 )) ; [ "$HOLD_LEFT" -le ${hold} -a "$HOLD_LEFT" -gt 0 -a $(hashblack | md5file) == $(cat ${CHK_FILE} | grep md5black | grep -Eo ^[a-zA-Z0-9]{32}) ] && echo -e "${f_light_white}On${reset} ~ ${HOLD_LEFT}min left" || echo "off" ;} || echo "off" )
 
   ├──── Blockfile ────────────────────────────────────┤"
 	if [ -s "$FINAL" ]; then echo -e "
@@ -987,11 +980,11 @@ elif [ "$1" == "update" -o "$1" == "start" -o "$1" == "delay" -o $# -eq 0 ]; the
 			[ $itest -gt 0 ] && echo "...restored Internet connectivity" | tee /dev/tty | logn
 			}
 		[ -s "$FINAL" ] && {
-			black_sig=$(black_hash)
-			white_sig=$(white_hash)
-			prev_black_sig=$(saved_hash md5black)
-			prev_white_sig=$(saved_hash md5white)
-			pending=$(pending_headers)
+			black_sig=$(hashblack | md5file)
+			white_sig=$(hashwhite | md5file)
+			prev_black_sig=$([ -s "$CHK_FILE" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
+			prev_white_sig=$([ -s "$CHK_FILE" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
+			pending=$( [ -s ${ADHEAD} ] && { cat ${ADHEAD} | grep -Ev ' 0$' | wc -l; } || echo 1 )
 			HOLD_LEFT=$(( $hold - ($(date +%s) - $(date -r "$FINAL" +%s)) /60))
 			[ "$HOLD_LEFT" -lt $hold -a "$HOLD_LEFT" -gt 0 -a "$black_sig" == "$prev_black_sig" -a "$white_sig" == "$prev_white_sig" -a $pending -eq 0 ] && {
 				echo "The last update was performed less then ${hold}min ago (${HOLD_LEFT}min left) and no modification to the config have been detected since. Skipping script execution for now..." | tee /dev/tty | logw
