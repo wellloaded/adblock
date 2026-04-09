@@ -211,12 +211,14 @@
 
 			function bytesToMB(b) {
 				const v = parseInt(b, 10);
-				return v > 0 ? (Math.round(v / 1048576 * 100) / 100) + '' : ''
+				// Use decimal MB (1 MB = 1,000,000 bytes)
+				return v > 0 ? (Math.round(v / 1000000 * 100) / 100) + '' : ''
 			}
 
 			function mbToBytes(m) {
 				const v = parseFloat(String(m || '').trim());
-				return v > 0 ? Math.round(v * 1048576) : ''
+				// Use decimal MB (1 MB = 1,000,000 bytes)
+				return v > 0 ? Math.round(v * 1000000) : ''
 			}
 
 			function parseStatusData(text) {
@@ -514,7 +516,8 @@
 						// helper: format bytes into short MB representation
 						function fmtMB(bytes) {
 							var b = parseInt(bytes || 0, 10) || 0;
-							var mb = b / 1048576;
+							// Use decimal MB (1 MB = 1,000,000 bytes)
+							var mb = b / 1000000;
 							var s = (Math.round(mb * 10) / 10).toFixed(1);
 							if (s.match(/\.0$/)) s = s.replace(/\.0$/, '');
 							return s + ' MB';
