@@ -884,28 +884,28 @@ elif [ "$1" == "help" ]; then
 	echo -e "
   ┌────────────────── FreshTomato ────────────────────┐
   │                                                   │
-	│                 ${f_light_white}Adblock  ${ver:0:6} ${reset}                  │
+  │                 ${f_light_white}Adblock  ${ver:0:6} ${reset}                  │
   │                                                   │
   ├───────────────────────────────────────────────────┤
   │                                                   │
   │       - Supported command line options -          │
   │                                                   │
-	│      ${f_light_white}help${reset}  This screen                            │
-	│    ${f_light_white}status${reset}  General running info                   │
+  │      ${f_light_white}help${reset}  This screen                            │
+  │    ${f_light_white}status${reset}  General running info                   │
   │                                                   │
-	│     ${f_light_white}start${reset}  Same as no parameter: will load        │
-	│      ${f_light_white}stop${reset}  Will unload the script                 │
-	│    ${f_light_white}update${reset}  Update lists while script is running   │
+  │     ${f_light_white}start${reset}  Same as no parameter: will load        │
+  │      ${f_light_white}stop${reset}  Will unload the script                 │
+  │    ${f_light_white}update${reset}  Update lists while script is running   │
   │                                                   │
-	│      ${f_light_white}test  example.com${reset} Verify domain resolution   │
+  │      ${f_light_white}test  example.com${reset} Verify domain resolution   │
   │                                                   │  
-	│     ${f_light_white}reset${reset}  Resets the maximum filesize            │
-	│     ${f_light_white}clear${reset}  Remove any relevant file found         │
-	│     ${f_light_white}trace${reset}  Displays the very last trace file      │
-	│  ${f_light_white}snapshot${reset}  Stores info into /tmp/debug.adblock    │
+  │     ${f_light_white}reset${reset}  Resets the maximum filesize            │
+  │     ${f_light_white}clear${reset}  Remove any relevant file found         │
+  │     ${f_light_white}trace${reset}  Displays the very last trace file      │
+  │  ${f_light_white}snapshot${reset}  Stores info into /tmp/debug.adblock    │
   │                                                   │
-	│    ${f_light_white}enable${reset}  Enable adblock                         │
-	│   ${f_light_white}disable${reset}  Disable adblock                        │
+  │    ${f_light_white}enable${reset}  Enable adblock                         │
+  │   ${f_light_white}disable${reset}  Disable adblock                        │
   │                                                   │
   └───────────────────────────────────────────────────┘
   "
