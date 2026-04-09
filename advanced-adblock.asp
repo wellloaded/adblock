@@ -2,7 +2,7 @@
 <!--
 	Tomato GUI
 	Copyright (C) 2007-2025 FreshTomato
-	ver="v2.72b - 04/23" # rs232
+	ver="v2.74a - 04/26" # rs232
 	https://www.freshtomato.org/
 	For use with Tomato Firmware only.
 	No part of this file may be used without permission.
@@ -102,7 +102,7 @@
 				background: rgba(127, 148, 166, 0.22);
 				overflow: hidden;
 				/* constrain visual width of progress bars */
-				max-width: 400px;
+				max-width: 420px;
 				width: 100%;
 				font-size: 0;
 			}
