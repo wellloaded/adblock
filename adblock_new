@@ -1,10 +1,9 @@
 #!/bin/sh
 # Adblock (a.k.a. DNS-filtering) FreshTomato GUI back-end
 
-
 . nvram_ops
 
-ver="v2.74 - 04/23" # rs232
+ver="v2.74a - 04/26" # rs232
 PID=$$
 pidfile="/var/run/adblock.pid"
 export PATH=/bin:/usr/bin:/sbin:/usr/sbin:/home/root
