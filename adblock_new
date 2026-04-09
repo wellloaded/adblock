@@ -1,6 +1,7 @@
 #!/bin/sh
 # Adblock (a.k.a. DNS-filtering) FreshTomato GUI back-end
 
+
 . nvram_ops
 
 ver="v2.74 - 04/23" # rs232
@@ -664,12 +665,29 @@ status_data() {
 	restarts=$(grep -E $(date +%b)" "+$(date +%d|sed 's/^0*//') /var/log/messages | grep -E '.*dnsmasq\[.*exiting' | wc -l )
 	calls=$(grep -E $(date +%b)" "+$(date +%d|sed 's/^0*//') /var/log/messages | grep "Kick off" | wc -l )
 	mapped=$([ $(grep 'conf-file=/etc/dnsmasq.adblock' /etc/dnsmasq.conf | wc -l) -eq 1 ] && echo "Yes" || echo "No")
-	ramt=$(grep 'MemTotal:' /proc/meminfo | awk '{print $2}')
-	ramu=$(free | grep buffer | awk '{print $3}')
+	# Read memory values from /proc/meminfo for portability across systems.
+	ramt=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+	mem_free=$(awk '/^MemFree:/ {print $2}' /proc/meminfo)
+	mem_buffers=$(awk '/^Buffers:/ {print $2}' /proc/meminfo)
+	mem_cache=$(awk '/^Cached:/ {print $2}' /proc/meminfo)
+	mem_avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo "")
+
 	[ -z "$ramt" ] && ramt=0
+	[ -z "$mem_free" ] && mem_free=0
+	[ -z "$mem_buffers" ] && mem_buffers=0
+	[ -z "$mem_cache" ] && mem_cache=0
+
+	if [ -n "$mem_avail" ]; then
+		# When MemAvailable exists use it (most accurate for used memory)
+		ramu=$(( ramt - mem_avail ))
+	else
+		# Fallback: used = total - free - buffers - cache
+		ramu=$(( ramt - mem_free - mem_buffers - mem_cache ))
+	fi
+
 	[ -z "$ramu" ] && ramu=0
 	rampu=0
-	[ "$ramt" -gt 0 ] && rampu=$(( $ramu * 100 / $ramt ))
+	[ "$ramt" -gt 0 ] && rampu=$(( ramu * 100 / ramt ))
 	load_avg=$(cat /proc/loadavg | awk '{print $1" / "$2" / "$3}')
 	dns_owner=$(ps | grep '[d]nsmasq.*async$' | awk 'NR==1 {print $2}')
 	[ -z "$dns_owner" ] && dns_owner="unknown"
