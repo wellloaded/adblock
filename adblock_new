@@ -13,6 +13,7 @@ DEBUG_FILE="$OPS/adblock.debug.output.${pre}"
 DEBUG_GLOB="$OPS/adblock.debug.output.*"
 DNS_TIME="$OPS/dnsmasq.time"
 mkdir -p "$OPS"
+ADHELPER="$OPS/adblock.helper"; touch ${ADHELPER}
 only() { sed -e 's/^[ \t]*//' "$@" | grep -Ev '^($|#|!)' | sort; }
 DELAY=0
 
@@ -100,7 +101,6 @@ BLACKLIST=$(NG adblock_blacklist)
 WHITELIST=$(NG adblock_whitelist | only )
 CUSTOM=$(NG adblock_blacklist_custom | only )
 TRIMPERC=5
-ADHELPER="$OPS/adblock.helper"; touch ${ADHELPER}
 ADHEAD="$OPS/adblock.headers"; touch ${ADHEAD}
 NOWB="$OPS/adblock.nowb"
 THENB="$OPS/adblock.thenb"
@@ -688,8 +688,9 @@ status_data() {
 	fi
 
 	[ -z "$ramu" ] && ramu=0
-	rampu=0
-	[ "$ramt" -gt 0 ] && rampu=$(( ramu * 100 / ramt ))
+	# compute memory percent with one decimal place for GUI display
+	# use awk to avoid integer-only arithmetic in shell
+	rampu=$(awk -v u="$ramu" -v t="$ramt" 'BEGIN{ if (t>0) printf "%.1f", (u*100)/t; else printf "0.0" }')
 	load_avg=$(cat /proc/loadavg | awk '{print $1" / "$2" / "$3}')
 	dns_owner=$(ps | grep '[d]nsmasq.*async$' | awk 'NR==1 {print $2}')
 	[ -z "$dns_owner" ] && dns_owner="unknown"
