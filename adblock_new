@@ -212,10 +212,6 @@ download() {
 		}
 	done
 	pending=$( [ -s ${ADHEAD} ] && { cat ${ADHEAD} | grep -Ev ' 0$' | wc -l; } || echo 1 )
-	black_sig=$(hashblack | md5file)
-	white_sig=$(hashwhite | md5file)
-	prev_black_sig=$([ -s "${CHK_FILE}" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
-	prev_white_sig=$([ -s "${CHK_FILE}" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
 
 	# Is there a reason to process? If so what?
 	restb=0
@@ -223,10 +219,10 @@ download() {
 	if [ ! -s $CHK_FILE -o $pending -gt 0 ]; then
 		echo "Clear run or change in the lists detected. Executing full run." | tee /dev/tty | logo
 		rm -f ${VRFY}
-	elif [ "$black_sig" != "$prev_black_sig" -o "$white_sig" != "$prev_white_sig" ]; then
+	elif [ $(hashblack | md5file) != $([ -s "${CHK_FILE}" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) -o $(hashwhite | md5file) != $([ -s "${CHK_FILE}" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) ]; then
 			# Modification ot the blacklist part?
-			[ "$black_sig" != "$prev_black_sig" ] && {
-				hashblack | grep -A99999 =BC+ | grep -v ^= >$NOWB
+			[ $(hashblack | md5file) != $([ -s "${CHK_FILE}" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) ] && {
+				hashblack | grep -A99999 =BC+ | grep -B99999 =BCF+ | grep -v ^= >$NOWB
 				cat "$CHK_FILE" | grep -A99999 =BC+ | grep -B99999 =W+ | grep -v ^= >$THENB
 				# Something removed? Is so skip
 				# sleep 600
@@ -241,7 +237,7 @@ download() {
 					}
 				}
 			# Modification ot the whitelist part?
-			[ "$white_sig" != "$prev_white_sig" ] && {
+			[ $(hashwhite | md5file) != $([ -s "${CHK_FILE}" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) ] && {
 				hashwhite | grep -A99999 =W+ | grep -v ^= >$NOWW
 				cat "$CHK_FILE" | grep -A99999 =W+ | grep -v ^= >$THENW
 				# Something removed? Is so skip
@@ -280,10 +276,14 @@ download() {
 		rm -f ${VRFY}
 		rm -f $NOWB $THENB $NOWW $THENW 2>/dev/null
 		safeDnsmasqRestart 0
-			echo "$black_sig md5black" > $CHK_FILE
-			echo "$white_sig md5white" >> $CHK_FILE
-		hashblack >> $CHK_FILE
-		hashwhite >> $CHK_FILE
+		echo "$(hashblack | md5file) md5black" > $CHK_FILE
+		echo "$(hashwhite | md5file) md5white" >> $CHK_FILE
+		echo "=BC+" >> $CHK_FILE
+		hashblack | grep -A99999 =BC+ | grep -B99999 =BCF+ | grep -v ^= >> $CHK_FILE
+		echo "=BCF+" >> $CHK_FILE
+		echo "=W+" >> $CHK_FILE
+		hashwhite | grep -A99999 =W+ | grep -v ^= >> $CHK_FILE
+		echo "=WF+" >> $CHK_FILE
 		EXIT_REASON="Incremental config changes were applied with a quick-run."
 		adExit 5
 	fi
@@ -519,10 +519,14 @@ download() {
 	# Final verification
 	[ -s "$FINAL" -a "$ENTRIES" -gt 0 ] || [ "$COUNT_CUSTOM" -ne 0 ] && {
 		logi "$FINAL is now populated with $(wc -l < $FINAL | number) lines in $(wc -c < $FINAL | number) Bytes"
-		echo "$black_sig md5black" > $CHK_FILE
-		echo "$white_sig md5white" >> $CHK_FILE
-		hashblack >> $CHK_FILE
-		hashwhite >> $CHK_FILE
+		echo "$(hashblack | md5file) md5black" > $CHK_FILE
+		echo "$(hashwhite | md5file) md5white" >> $CHK_FILE
+		echo "=BC+" >> $CHK_FILE
+		hashblack | grep -A99999 =BC+ | grep -B99999 =BCF+ | grep -v ^= >> $CHK_FILE
+		echo "=BCF+" >> $CHK_FILE
+		echo "=W+" >> $CHK_FILE
+		hashwhite | grep -A99999 =W+ | grep -v ^= >> $CHK_FILE
+		echo "=WF+" >> $CHK_FILE
 	}
 }
 
@@ -749,10 +753,8 @@ status_data() {
 	fi
 	hold_text="Off"
 	if [ -s "$CHK_FILE" -a -s "$FINAL" ]; then
-		black_sig=$(hashblack | md5file)
-		prev_black_sig=$([ -s "$CHK_FILE" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
 		HOLD_LEFT=$(( $hold - ($(date +%s) - $(date -r "$FINAL" +%s)) /60 ))
-		if [ "$HOLD_LEFT" -le $hold -a "$HOLD_LEFT" -gt 0 -a "$black_sig" == "$prev_black_sig" ]; then
+		if [ "$HOLD_LEFT" -le $hold -a "$HOLD_LEFT" -gt 0 -a $(hashblack | md5file) == $([ -s "$CHK_FILE" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) ]; then
 			hold_text="${HOLD_LEFT} min left"
 		fi
 	fi
@@ -1001,13 +1003,9 @@ elif [ "$1" == "update" -o "$1" == "start" -o "$1" == "delay" -o $# -eq 0 ]; the
 			[ $itest -gt 0 ] && echo "...restored Internet connectivity" | tee /dev/tty | logn
 			}
 		[ -s "$FINAL" ] && {
-			black_sig=$(hashblack | md5file)
-			white_sig=$(hashwhite | md5file)
-			prev_black_sig=$([ -s "$CHK_FILE" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
-			prev_white_sig=$([ -s "$CHK_FILE" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0)
 			pending=$( [ -s ${ADHEAD} ] && { cat ${ADHEAD} | grep -Ev ' 0$' | wc -l; } || echo 1 )
 			HOLD_LEFT=$(( $hold - ($(date +%s) - $(date -r "$FINAL" +%s)) /60))
-			[ "$HOLD_LEFT" -lt $hold -a "$HOLD_LEFT" -gt 0 -a "$black_sig" == "$prev_black_sig" -a "$white_sig" == "$prev_white_sig" -a $pending -eq 0 ] && {
+			[ "$HOLD_LEFT" -lt $hold -a "$HOLD_LEFT" -gt 0 -a $(hashblack | md5file) == $([ -s "$CHK_FILE" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) -a $(hashwhite | md5file) == $([ -s "$CHK_FILE" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) -a $pending -eq 0 ] && {
 				EXIT_REASON="The last update was performed less then ${hold}min ago (${HOLD_LEFT}min left) and no modification to the config have been detected since. Skipping script execution for now..."
 				echo "$EXIT_REASON" | tee /dev/tty >/dev/null 2>/dev/null
 				adExit 5
