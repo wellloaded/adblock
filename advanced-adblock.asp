@@ -1,1054 +1,892 @@
-#!/bin/sh
-# Adblock (a.k.a. DNS-filtering) FreshTomato GUI back-end
+<!DOCTYPE html>
+<!--
+	Tomato GUI
+	Copyright (C) 2007-2025 FreshTomato
+	ver="v2.74c - 04/26" # rs232
+	https://www.freshtomato.org/
+	For use with Tomato Firmware only.
+	No part of this file may be used without permission.
+-->
+<html lang="en-GB">
 
-. nvram_ops
-
-ver="v2.74c - 04/26" # rs232
-PID=$$
-pidfile="/var/run/adblock.pid"
-export PATH=/bin:/usr/bin:/sbin:/usr/sbin:/home/root
-pre=$(date +%s)
-OPS="/tmp/adblock-ops"
-DEBUG_FILE="$OPS/adblock.debug.output.${pre}"
-DEBUG_GLOB="$OPS/adblock.debug.output.*"
-DNS_TIME="$OPS/dnsmasq.time"
-mkdir -p "$OPS"
-only() { sed -e 's/^[ \t]*//' "$@" | grep -Ev '^($|#|!)' | sort; }
-DELAY=0
-
-hashblack() {
-	hb="=B+ $(NG adblock_blacklist | tr '>' '\n' | grep -E ^1 | cut -d/ -f3- | sort | cut -f1 -d'<') $(NG adblock_enable) $(NG adblock_path) $(NG adblock_limit) =BC+ $(NG adblock_blacklist_custom | only ) =BCF+"
-	for i in $(NG adblock_blacklist_custom | only | grep -E ^/ ); do hb="$hb $(cat ${i} | only )"; done
-	echo $hb | tr " " "\n" | grep -Ev '^($|#|!)'
-}
-
-hashwhite() {
-	hw="=W+ $(NG adblock_whitelist | only ) =WF+"
-	for i in $(NG adblock_whitelist | only | grep -E ^/ ); do hw="$hw $(cat ${i} | only)"; done
-	echo $hw | tr " " "\n" | grep -Ev '^($|#|!)'
-}
-
-md5file() { md5sum | awk '{print $1}'; }
-
-[ $(NG adblock_logs | wc -c) -gt 0 ] && { LOGL=$(NG adblock_logs); } || { LOGL=3; }
-alias logo='logger -p NOTICE -t adblock[$PID]'
-[ $LOGL -ge 7 ] && alias logd='logger -p DEBUG -t adblock[$PID]' || alias logd=':'
-[ $LOGL -ge 6 ] && alias logi='logger -p INFO -t adblock[$PID]' || alias logi=':'
-[ $LOGL -ge 5 ] && alias logn='logger -p NOTICE -t adblock[$PID]' || alias logn=':'
-[ $LOGL -ge 4 ] && alias logw='logger -p WARN -t adblock[$PID]' || alias logw=':'
-[ $LOGL -ge 3 ] && alias loge='logger -p ERROR -t adblock[$PID]' || alias loge=':'
-( [ $LOGL -eq 7 ] && [ $# -eq 0 ] ) || ( [ $LOGL -eq 7 ] && [ $1 == update -o $1 == start -o $1 == delay ] ) && { exec 2>"$DEBUG_FILE" ; set -x; echo "Running in trace mode: $DEBUG_FILE"; } || set -
-hold=30
-
-redirect_url() { grep -i '^Location:' "$1" | tail -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r'; }
-list_urls() { sed -e 's/^[ 	]*//' "$1" | tr -d '\r' | awk '/^https?:\/\// && !seen[$1]++ {print $1}'; }
-url_domains() { grep -Eo '((([a-zA-Z]{1,2})|([0-9]{1,2})|([a-zA-Z0-9]{1,2})|([a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]))\.)+[a-zA-Z]{2,6}\s*/\s*' "$@" | tr "/" " "; }
-
-dnsrestart() { pr=$(cat /proc/uptime | cut -f1 -d' ') ; service dnsmasq restart &>/dev/null && { echo $(cat /proc/uptime | cut -f1 -d ' ' ) $pr | awk '{print $1 - $2 "s"}' > ${DNS_TIME} ; [ ${LOGL} -ge 6 -a -f ${DNS_TIME} ] && { sleep 1; logi "dnsmasq restart time = $(cat $DNS_TIME)" ;} ;} ;}
-
-( [ -f $pidfile ] && [ $# -eq 0 -o $1 == start -o $1 == update -o $1 == delay ] ) && {
-	# If the pidfile is older than $hold min this is very likely and issue = remove it.
-	[ $((($(date +%s) - $(date -r ${pidfile} +%s))/60)) -gt $hold ] && {
-		rm -f $pidfile
-		for process in $(ps | grep [a]dblock | grep -v "status\|$PID" | awk '{print $1}'); do (kill -9 $process) &>/dev/null ; done
-		dnsrestart
-	}
-	EXIT_REASON="Adblock/DNS-filtering is already loading. Skipping call..."
-	echo "$EXIT_REASON" | tee /dev/tty >/dev/null 2>/dev/null
-	runtime=$(date -d@$(( $(date +%s) - $pre)) -u +%H"h "%M"m "%Ss)
-	echo "errors: ${ERRCOUNT}" > $ADHELPER
-	echo "runtime: ${runtime}" >> $ADHELPER
-	echo "reason: ${EXIT_REASON}" >> $ADHELPER
-	logo "$EXIT_REASON"
-	exit
-}
-
-( ls -1tr $DEBUG_GLOB | head -n -10 | while read file; do rm -f $file; done ) 2>/dev/null # Keep maximum 10 debug files
-
-USERAGENT="Mozilla/5.0 (X11; Linux x86_64; rv:10.0) Gecko/20100101 Firefox/109.0"
-[ $LOGL -eq 7 ] && Q=" " || Q="-q"
-yget() { wget --no-check-certificate -T 15 $Q -U "$USERAGENT" --header "Cache-Control: no-cache" "$@"; }
-
-domain() { sed 's/[#!].*//' "$@" | grep -Eo '((([a-zA-Z]{1,2})|([0-9]{1,2})|([a-zA-Z0-9]{1,2})|([a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]))\.)+[a-zA-Z]{2,6}' | grep -vEi '\.gif$|\.jpe?g$|\.png$|\.jsp?$|\.css$|\.ico$|\.aspx?$|\.php$|\.cer$|\.cfm$|\.cgi$|\.x?html?$|\.py$|\.rss$|\.vb$|\.sh$|\.json$'; }
-notin() { grep -Ev '^#.*|^!.*|^::|^\s*?$|^([a-f0-9:]+:+)+[a-f0-9]+' "$@"; }
-number() { sed ':a;s/\B[0-9]\{3\}\>/,&/;ta' "$@"; }
-[ $(NG adblock_path | wc -c) -gt 0 ] && {
-	NG adblock_path | grep -Eq '^/jffs' && logw "Custom path is pointing to JFFS, this is not ideal. Consider using alternative storages like USB/CIFS/etc."
-	DPATH="$(NG adblock_path | sed 's/\/$//')/adblock" ; mkdir -p "$DPATH"; } || DPATH="/etc"
-
-sizeLimit=$(NG adblock_limit)
-setlimit() {
-	[ $(NG adblock_limit | wc -c ) -le 1 ] && {
-		NS adblock_limit=$(echo $(($(cat /proc/meminfo | grep MemTotal | awk '{print $2}') * $([ $DPATH == '/etc' ] && echo 650 || echo 1000) / 10)))
-		NC
-		logi "The nvram adblock_limit variable is now reset to the default value of $(NG adblock_limit)"
-	}
-	sizeLimit=$(NG adblock_limit)
-}
-
-PREFIX="/tmp/adblock-lists" ; mkdir -p "$PREFIX" && cd "$PREFIX"
-[ $DPATH == '/etc' ] && D=$PREFIX || D=$DPATH
-ENABLE=$(NG adblock_enable)
-FINAL="${DPATH}/dnsmasq.adblock";
-UNLOADED="${DPATH}/dnsmasq.adblock.unloaded"
-TM="$PREFIX/adblock.temp"
-TM1="$PREFIX/adblock.temp1"
-CHK_FILE="$OPS/adblock.time"
-RTN=0
-alias rtn='[ $RTN -ne 255 ] && { echo $RTN ; return; }'
-BLACKLIST=$(NG adblock_blacklist)
-WHITELIST=$(NG adblock_whitelist | only )
-CUSTOM=$(NG adblock_blacklist_custom | only )
-TRIMPERC=5
-ADHELPER="$OPS/adblock.helper"; touch ${ADHELPER}
-ADHEAD="$OPS/adblock.headers"; touch ${ADHEAD}
-NOWB="$OPS/adblock.nowb"
-THENB="$OPS/adblock.thenb"
-NOWW="$OPS/adblock.noww"
-THENW="$OPS/adblock.thenw"
-SUBSED_FILE="$OPS/adblock.subsed"
-WHITISH_FILE="$OPS/adblock.whitish"
-WHITIS_FILE="$OPS/adblock.whitis"
-DNSMASQ_TEST="$OPS/adblock.dnsmasq.test"
-SNAPSHOT_PREFIX="$OPS/adblock.snapshot"
-last_trace() { ls -1tr $DEBUG_GLOB 2>/dev/null | tail -1; }
-CHGCOUNT=0; alias chgcount='CHGCOUNT=$((CHGCOUNT+1))'
-ERRCOUNT=0; alias erroradd='ERRCOUNT=$((ERRCOUNT+1))'
-VRFY="$OPS/adblock.verify"
-itest=0
-EXIT_REASON=""
-extra="$(NG adblock_path | sed 's/\/$//')/adblock.extra" ; [ -s "$extra" ] && { [ $(ls -l $extra | cut -c4,7,10) != "xxx" ] && { chmod +x $extra ;} ; . "$extra"; }
-
-checkList() { # 0=fetch_local / 1=download / 2=issues / 3=duplicated
-	urinameh=$(echo "${4}".header)
-	urinamel=$(echo "${4}".list)
-	logd "[$1] checkList(A) - Header presence"
-	[ ! -f "$PREFIX/${urinameh}" ] && { yget "$2" -O /dev/null -S --spider 2> "$PREFIX/${urinameh}"; [ $(echo $?) -gt 0 ] && {
-		logd "[$1] checkList(A2) = Can't download the list headers"
-		[ $DPATH != '/etc' -a -s "$DPATH/${urinameh}" -a -s "$DPATH/${urinamel}" ] && {
-			logd "[$1] checkList(A2) = Found a stored older copy of ${urinameh}. Using it..."
-			cp -f "$DPATH/${urinameh}" $PREFIX
-			RTN=255
-			} || RTN=2
-		} || RTN=255
-	}
-	rtn
-	logd "[$1] checkList(B) - Duplicated lists check"
-	cat ${ADHEAD} 2> /dev/null | grep -Eq ${4} && { logd "[$1] checkList(B1) = The list is already downloaded. Is this perhaps a duplicate?"; RTN=3; } || RTN=255
-	rtn
-	logd "[$1] checkList(C) - URI Redirection"
-	redir=$(redirect_url "$PREFIX/${urinameh}")
-	[ -n "$redir" ] && { yget "$redir" -O /dev/null -S --spider 2> "$PREFIX/${urinameh}"; RTN=255 ;} || RTN=255
-	logd "[$1] checkList(D) - \$PATH control"
-	[ $DPATH == '/etc' ] && { logd "[$1] checkList(D1) = Using RAM only, skipping further controls"; RTN=1; } || { RTN=255; } # Using /tmp (RAM) nothing to check
-	rtn
-	logd "[$1] checkList(E) - Stored list"
-	[ ! -f "$D/${urinamel}" ] && { logd "[$1] checkList(E1) - The list is not yet downloaded, skipping further controls"; RTN=1; } || { RTN=255; }
-	rtn
-	logd "[$1] checkList(F) - Header content"
-	[ $(wc -c < "$PREFIX/${urinameh}") -lt 80 -o $(grep -E 'timed out|reset|No route to host' < "$PREFIX/${urinameh}" | wc -l ) -ge 1 ] && { logd "[$1] checkList(F1) = Errors have been found in the header, skipping further controls"; RTN=1; } || { RTN=255; } # Just download if any issues with the header
-	rtn
-	logd "[$1] checkList(G) - ETag"
-	# Compare ETag field
-	[ -f $D/${urinameh} ] && { [ $(grep -i 'etag:' < "$PREFIX/${urinameh}" | tr -d '"' | awk '{print $2}' | sed 's/[^a-zA-Z0-9]//g' ) == $(grep -i 'etag:' < "$D/${urinameh}" | tr -d '"' | awk '{print $2}' | sed 's/[^a-zA-Z0-9]//g') ] && { logd "[$1] checkList(G0) = ETag confirms the list is already updated"; RTN=0; } || { RTN=255; } ;}
-	rtn
-	# If ETag is inconclusive look for Last-modified
-	logd "[$1] checkList(H) - Last-Modified"
-	grep -q 'Last-Modified' < "$PREFIX/${urinameh}" && {
-		[ "$(grep -i 'Last-Modified' < "$PREFIX/${urinameh}" | awk '{print $3" "$4" "$5" "$6}')" != "$(grep -i 'Last-Modified' < "$D/${urinameh}" | awk '{print $3" "$4" "$5" "$6}')" ] && { logd "[$1] checkList(H1) = Last modified confirmed the list has been modified -> Forcing download"; RTN=1; } || { RTN=255; }
-		rtn
-	}
-	# Else download
-	logd "[$1] checkList(K) = None of the checks are conclusive. Forcing a download."
-	RTN=1
-	rtn
-}
-
-checkRam() {
-	# 0=Not-good-skip / 1=OK-proceed / 2=NoInfo
-	urinameh=$(echo "${4}".header)
-	mem_avail=$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo)
-	[ -n "$mem_avail" ] && freeram=$(( mem_avail * 1024 )) || freeram=$(( $(awk '/^MemFree:/ {print $2; exit}' /proc/meminfo) * 1024 )) # in Bytes
-	listSize=$( [ -s "$PREFIX/${urinameh}" ] && { grep -Evi 'Content-Length: 0$'  "$PREFIX/${urinameh}" | grep -i 'Content-Length' | awk '{print $2}' ; } ) # in Bytes
-	[ -z "$listSize" ] && listSize=0
-	logd "[$1] checkRam(X) - list header content assessment"
-	[ $listSize -eq 0 ] && { logd "[$1] checkRam(X0) = The list headers don't provide enough info to perform a proper check. Skipping the checkRam() and proceed"; RTN=0; } || RTN=255
-	rtn
-	logd "[$1] checkRam(Y) - listSize Vs sizeLimit"
-	[ -f $TM ] && { [ $(( ( $(echo $(wc -c < $TM)) + $listSize ) * (100 + 20) / 100 )) -lt $sizeLimit ] && RTN=255 || { loge "[$1] checkRam(Y1) = listSize Vs sizeLimit = Low confidence this list would fit within the sizeLimit. Skipping it..."; RTN=1; } ; } # 20% extra is allowed
-	rtn
-	logd "[$1] checkRam(Z) - listSize Vs free RAM"
-	[ -z "$listSize" ] && { logd "[$1] checkRam(Z1) - Header Content Lenght missing, unable to conclude negatively, proceed"; RTN=1; } || {
-		[ $freeram -gt $(( listSize * 120 / 100 )) ] && { logd "[$1] checkRam(Z0) = The list should fit in RAM, proceeding"; RTN=0; } || { loge "[$1] checkRam(Z1) = Low confidence this list would fit in the free RAM. Skipping it..."; RTN=1; }
-		rtn
-	}
-}
-
-download() {
-	COUNT=0
-	SUBLIST=0
-	ENTRIES=0
-	[ "$DELAY" == "1" ] && {
-		logo "Kick off (10 seconds delay)"
-		sleep 10
-	} || {
-		logo "Kick off"
-	}
-	rm -rf $PREFIX/*
-	echo "1COUNT 2URL 3uriname 4listresult 5ramresult 0" > $ADHEAD
-
-	touch ${VRFY}
-	# Get fresh headers for all the enabled lists
-	for i in $(echo "$BLACKLIST" | grep -Ev '^$' | tr " " "_" | tr ">" "\n"); do
-		ENBL=$(echo "$i" | cut -d "<" -f1)
-		URL=$(echo "$i" | cut -d "<" -f2 | sed -e 's/_$//' -e 's/^[ \t]*//')
-		COUNT=$((COUNT+1))
-		[ "$ENBL" -eq "1" ] && {
-			uriname=$(echo "$URL" | md5sum | awk '{print $1}')
-			logn "[$COUNT][$URL][$uriname] Fetching fresh list-headers"
-			listresult=$(checkList $COUNT $URL none $uriname)
-			logd "[$COUNT] Result of checkList($listresult) ................ 0=storage / 1=download / 2=issues / 3=duplicated"
-			echo "$COUNT $URL $uriname $listresult" >> $ADHEAD
-		}
-	done
-	pending=$( [ -s ${ADHEAD} ] && { cat ${ADHEAD} | grep -Ev ' 0$' | wc -l; } || echo 1 )
-
-	# Is there a reason to process? If so what?
-	restb=0
-	restw=0
-	if [ ! -s $CHK_FILE -o $pending -gt 0 ]; then
-		echo "Clear run or change in the lists detected. Executing full run." | tee /dev/tty | logo
-		rm -f ${VRFY}
-	elif [ $(hashblack | md5file) != $([ -s "${CHK_FILE}" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) -o $(hashwhite | md5file) != $([ -s "${CHK_FILE}" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) ]; then
-			# Modification ot the blacklist part?
-			[ $(hashblack | md5file) != $([ -s "${CHK_FILE}" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) ] && {
-				hashblack | grep -A99999 =BC+ | grep -B99999 =BCF+ | grep -v ^= >$NOWB
-				cat "$CHK_FILE" | grep -A99999 =BC+ | grep -B99999 =W+ | grep -v ^= >$THENB
-				# Something removed? Is so skip
-				# sleep 600
-				grep -qxvFf $NOWB $THENB && {
-					restb=1
-					} || {
-					# Something added? Is so process in quick-run
-						grep -qxvFf $THENB $NOWB && {
-							# for i in $(grep -xvFf $THENB $NOWB); do sed -i "1s/^/local=\/$i\/\n/" $FINAL; done
-							restb=2
-						}
-					}
-				}
-			# Modification ot the whitelist part?
-			[ $(hashwhite | md5file) != $([ -s "${CHK_FILE}" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) ] && {
-				hashwhite | grep -A99999 =W+ | grep -v ^= >$NOWW
-				cat "$CHK_FILE" | grep -A99999 =W+ | grep -v ^= >$THENW
-				# Something removed? Is so skip
-				grep -qxvFf $NOWW $THENW && {
-					restw=1
-					} || {
-					# Something added? Is so process in quick-run
-						grep -qxvFf $THENW $NOWW && {
-							restw=2
-						}
-					}
-				}
-	# No change of sort? Skip!
-	else
-		EXIT_REASON="There's no change of config and all the enabled lists are updated. Skipping..."
-		echo "$EXIT_REASON" | tee /dev/tty >/dev/null 2>/dev/null
-		logi "$FINAL = $(wc -l < $FINAL|number) lines in $(wc -c < $FINAL|number) Bytes."
-		rm -f ${VRFY}
-		adExit 5
-	fi
-	# Crunch the results
-	if [ $restb -eq 1 -o $restw -eq 1 ]; then
-			echo "Disruptive change of config detected. Executing full-run." | tee /dev/tty | logi
-			rm -f $NOWB $THENB $NOWW $THENW 2>/dev/null
-	elif [ $restb -eq 2 -o $restw -eq 2 ]; then
-		[ $restb -eq 2 ] && {
-			for i in $(grep -xvFf $THENB $NOWB); do
-				echo "Addition in the blacklist_custom detected. Executing quick-run." | tee /dev/tty | logi
-				grep -q "/$i/" $FINAL || echo "local=/$i/" >> $FINAL; done
+<head>
+	<meta http-equiv="content-type" content="text/html;charset=utf-8">
+	<meta name="robots" content="noindex,nofollow">
+	<title>[<% ident(); %>] Advanced: Adblock (DNS filtering)</title>
+	<link rel="stylesheet" type="text/css" href="tomato.css?rel=<% version(); %>">
+	<% css(); %>
+		<style>
+			#adblock-status {
+				/* dynamic height based on content */
+				padding: 20px 6px;
+				border: 1px solid rgba(127, 148, 166, 0.25);
+				border-radius: 6px;
+				/* simple transparent background so table expands with content */
+				background: transparent;
+				word-break: break-word;
+				white-space: normal;
 			}
-		[ $restw -eq 2 ] && {
-			for i in $(grep -xvFf $THENW $NOWW); do
-				echo "Addition in the whitelist detected. Executing quick-run." | tee /dev/tty | logi
-				sed -i "/local=\/$i\//d" $FINAL; done
+
+			.adblock-status-head {
+				margin-bottom: 4px;
 			}
-		rm -f ${VRFY}
-		rm -f $NOWB $THENB $NOWW $THENW 2>/dev/null
-		safeDnsmasqRestart 0
-		echo "$(hashblack | md5file) md5black" > $CHK_FILE
-		echo "$(hashwhite | md5file) md5white" >> $CHK_FILE
-		echo "=BC+" >> $CHK_FILE
-		hashblack | grep -A99999 =BC+ | grep -B99999 =BCF+ | grep -v ^= >> $CHK_FILE
-		echo "=BCF+" >> $CHK_FILE
-		echo "=W+" >> $CHK_FILE
-		hashwhite | grep -A99999 =W+ | grep -v ^= >> $CHK_FILE
-		echo "=WF+" >> $CHK_FILE
-		EXIT_REASON="Incremental config changes were applied with a quick-run."
-		adExit 5
-	fi
 
-	# If so proceed
-	COUNT=0
-	rm -f ${FINAL}
-	for i in $(echo "$BLACKLIST" | grep -Ev '^$' | tr " " "_" | tr ">" "\n"); do
-		ENBL=$(echo "$i" | cut -d "<" -f1)
-		URL=$(echo "$i" | cut -d "<" -f2 | sed -e 's/_$//' -e 's/^[ \t]*//')
-		COUNT=$((COUNT+1))
-		[ "$ENBL" -eq "1" ] && {
-			uriname=$(echo "$URL" | md5sum | awk '{print $1}')
-			logn "[$COUNT][$URL][$uriname] Processing blacklist"
-			listresult=$(awk -v h="$uriname" '$3 == h {print $4; exit}' "$ADHEAD")
-			ramresult=$(checkRam $COUNT $URL none $uriname)
-			logd "[$COUNT] Result of checkRam($ramresult) ................ 0=OK / 1=failed"
-			if [ $listresult -eq 0 -a $ramresult -eq 0 ]; then
-				logi "[$COUNT][$URL] The list is already updated. No download needed. Loading from storage."
-			elif [ $listresult -eq 0 -a $ramresult -eq 1 ]; then
-				logw "[$COUNT][$URL] The list is already updated, but checkRam() failed. Skipping..."
-				erroradd
-				continue
-			elif [ $listresult -eq 1 -a $ramresult -eq 1 ]; then
-				logw "[$COUNT][$URL] The would require a download, but checkRam() failed. Skipping..."
-				erroradd
-				continue
-			elif [ $listresult -eq 2 ]; then
-				loge "[$COUNT][$URL] Unable to download the list headers, please check the source."
-				erroradd
-				continue
-			elif [ $listresult -eq 3 ]; then
-				logw "[$COUNT][$URL] It appears like this list is a duplicate. Skipping..."
-				continue
-			elif [ $listresult -eq 1 -a $ramresult -eq 0 ]; then
-				logi "[$COUNT][$URL] checkRam() passed."
-				logn "[$COUNT][$URL] The list is being downloaded."
-				redir=$(redirect_url "$PREFIX/${uriname}.header")
-				[ -n "$redir" ] && { logi "[$COUNT][$URL] The file is redirected to a new URL. Handling this."; URL="$redir" ;}
-				yget "$URL" -O "$PREFIX/${uriname}.list" && [ $DPATH != '/etc' ] && { cp -f "$PREFIX/${uriname}.header" "$D" ; mv -f "$PREFIX/${uriname}.list" "$D"; }
-				usleep 200
-			fi
+			.adblock-badge {
+				display: inline-block;
+				margin: 0 6px 0 0;
+				padding: 0 8px;
+				border-radius: 999px;
+				font-size: 11px;
+				font-weight: 700;
+			}
 
-			[ ! -f "$DPATH/${uriname}.list" -a ! -f "$PREFIX/${uriname}.list" ] && {
-				loge "[$COUNT][$URL] This list was not downloaded. Skipping..."
-				erroradd
-			} || {
-				grep -q -E '^[[:space:]]*https?://' "$D/${uriname}.list" && {
-					# List of lists
-					logn "[$COUNT][$URL] Group-of-lists (List of URLs) format >> Parsing..."
-					list_urls "$D/${uriname}.list" | while read u; do
-						SUBLIST=$((SUBLIST+1))
-						urinamed=$(echo "$u" | md5sum | awk '{print $1}')
-						logn "[$COUNT][$SUBLIST][$u][$uriname] Processing black(sub)list"
-						listresult=$(checkList $COUNT $u $SUBLIST $urinamed)
-						ramresult=$(checkRam $COUNT $u $SUBLIST $urinamed)
-						logd "[$COUNT][$SUBLIST] Result of checkList($listresult) ................ 0=storage / 1=download / 2=issues / 3=duplicated"
-						logd "[$COUNT][$SUBLIST] Result of checkRam($ramresult) ................ 0=OK / 1=failed"
+			.adblock-badge.ok {
+				background: #e8f4ea;
+				color: #2f7d54;
+			}
 
-						if [ $listresult -eq 0 -a $ramresult -eq 0 ]; then
-							logi "[$COUNT][$SUBLIST][$u] The (sub)list is already updated. No download needed. Loading from storage."
-						elif [ $listresult -eq 0 -a $ramresult -eq 1 ]; then
-							logw "[$COUNT][$SUBLIST][$u] The (sub)list is already updated, but checkRam() failed. Skipping..."
-							erroradd
-							continue
-						elif [ $listresult -eq 2 ]; then
-							loge "[$COUNT][$SUBLIST][$u] Unable to download the (sub)list headers. Please verify the source. Skipping..."
-							erroradd
-							continue
-						elif [ $listresult -eq 3 ]; then
-							logw "[$COUNT][$SUBLIST][$u] It appears like this (sub)list is a duplicate. Skipping..."
-							continue
-						elif [ $listresult -eq 1 -a $ramresult -eq 0 ]; then
-							logi "[$COUNT][$SUBLIST][$u] Free RAM check passed."
-							printf '%s\n' "$u" >> "$PREFIX/white.url"
-							logi "[$COUNT][$SUBLIST][$u] The (sub)list is being downloaded."
-							yget "$u" -O "$PREFIX/${urinamed}.list" && [ $DPATH != '/etc' ] && { cp -f "$PREFIX/${urinamed}.header" "$D" ; mv -f "$PREFIX/${urinamed}.list" "$D"; }
-							usleep 200
-							echo "${COUNT}-${SUBLIST} $u $urinamed $listresult" >> ${ADHEAD}
-						fi
+			.adblock-badge.warn {
+				background: #fff3cd;
+				color: #9a6b10;
+			}
 
-						[ ! -f "$D/${urinamed}.list" ] && {
-							loge "[$COUNT][$SUBLIST][$u] Sublist download error! Please verify the URL"
-							erroradd
-						} || {
-							ENTRIES=$(notin "$D/${urinamed}.list" | wc -l)
-							[ $ENTRIES -le 1 ] && {
-								logw "[$COUNT][$SUBLIST][$u] The sublist appears to be empty! Skipping..."
-								erroradd
-							} || {
-								logi "[$COUNT][$SUBLIST][$u] Found $(echo $ENTRIES|number) entries"
-								parsefile "$D/${urinamed}.list" "$u" "$COUNT" "$SUBLIST"
+			.adblock-badge.bad {
+				background: #fdecea;
+				color: #b14b55;
+			}
+
+			.adblock-status-view {
+				width: 100%;
+				border-collapse: collapse;
+			}
+
+			.adblock-status-view th,
+			.adblock-status-view td {
+				padding: 4px 0;
+				text-align: left;
+				vertical-align: top;
+				border-top: 1px solid rgba(127, 148, 166, 0.14);
+			}
+
+			.adblock-status-view tr:first-child th,
+			.adblock-status-view tr:first-child td {
+				border-top: 0;
+			}
+
+			.adblock-status-view th {
+				width: 110px;
+				padding-right: 12px;
+				opacity: 0.75;
+			}
+
+			.adblock-note {
+				display: block;
+				margin-top: 0px;
+				opacity: 0.85;
+			}
+
+			.adblock-note-inline {
+				display: inline-block;
+				margin-left: 6px;
+				opacity: 0.85;
+				vertical-align: middle;
+			}
+
+			.adblock-bar {
+				display: flex;
+				align-items: stretch;
+				box-sizing: border-box;
+				height: 2px;
+				margin-top: 6px;
+				border-radius: 2px;
+				background: rgba(127, 148, 166, 0.22);
+				overflow: hidden;
+				/* constrain visual width of progress bars */
+				max-width: 420px;
+				width: 100%;
+				font-size: 0;
+			}
+
+			.adblock-bar span {
+				display: block;
+				height: 100%;
+				flex: 0 0 auto;
+			}
+
+			.adblock-bar span.app {
+				background: #005691;
+			}
+
+			.adblock-bar span.buffers {
+				background: #f57cd7;
+			}
+
+			.adblock-bar span.cache {
+				background: #2cb259;
+			}
+
+			/* buffer/cache specific colours (kept simple) */
+			.adblock-bar.buffers span {
+				background: #9a6b10;
+			}
+
+			.adblock-bar.cache span {
+				background: #6c757d;
+			}
+
+			.adblock-empty {
+				padding-top: 30px;
+				text-align: center;
+				opacity: 0.72;
+			}
+
+			/* owner root special colour (no badge style used elsewhere) */
+			.adblock-owner-root {
+				color: #9a6b10;
+				font-weight: 700;
+			}
+
+			/* small spinner used for activity states */
+			.adblock-spinner {
+				width: 0.5em;
+				/* ~50% of the current font-size */
+				height: auto;
+				vertical-align: middle;
+				margin-left: 6px;
+				display: inline-block;
+			}
+
+			/* align the middle label column to the right */
+			.adblock-status-table .adblock-label {
+				text-align: right;
+				padding-right: 8px;
+			}
+
+			/* ensure header badges and the top status cell are left-aligned */
+			.adblock-status-table td.adblock-label[colspan="2"] {
+				text-align: left;
+				/* override right-align for the top row */
+				padding-right: 0;
+			}
+
+			.adblock-status-head {
+				text-align: left;
+			}
+		</style>
+		<script src="tomato.js?rel=<% version(); %>"></script>
+		<script>
+
+			//	<% nvram("adblock_enable,adblock_blacklist,adblock_blacklist_custom,adblock_whitelist,adblock_path,adblock_limit,adblock_logs"); %>
+
+			var cprefix = 'advanced_adblock';
+			var adblockg = new TomatoGrid();
+			var adblock_refresh = cookie.get(cprefix + '_refresh');
+			var cmdresult = '';
+			var cmd1 = cmd2 = null;
+
+			adblockg.exist = function (f, v) {
+				var data = this.getAllData();
+				for (var i = 0; i < data.length; ++i) {
+					if (data[i][f] == v) return true;
+				}
+
+				return false;
+			}
+
+			adblockg.dataToView = function (data) {
+				return [(data[0] != '0') ? '&#x2b50' : '', data[1], data[2]];
+			}
+
+			adblockg.fieldValuesToData = function (row) {
+				var f = fields.getAll(row);
+
+				return [f[0].checked ? 1 : 0, f[1].value, f[2].value];
+			}
+
+			adblockg.verifyFields = function (row, quiet) {
+				var ok = 1;
+
+				return ok;
+			}
+
+			function bytesToMB(b) {
+				const v = parseInt(b, 10);
+				// Use decimal MB (1 MB = 1,000,000 bytes)
+				return v > 0 ? (Math.round(v / 1000000 * 100) / 100) + '' : ''
+			}
+
+			function mbToBytes(m) {
+				const v = parseFloat(String(m || '').trim());
+				// Use decimal MB (1 MB = 1,000,000 bytes)
+				return v > 0 ? Math.round(v * 1000000) : ''
+			}
+
+			function parseStatusData(text) {
+				var data = {};
+				var lines = String(text || '').split(/\r?\n/);
+
+				for (var i = 0; i < lines.length; ++i) {
+					var pos = lines[i].indexOf('=');
+					if (pos > 0)
+						data[lines[i].substring(0, pos)] = lines[i].substring(pos + 1);
+				}
+
+				return data;
+			}
+
+			function statusBadge(label, mode) {
+				return '<span class="adblock-badge ' + mode + '">' + escapeHTML(label) + '<\/span>';
+			}
+
+			function statusBar(value) {
+				var n = parseInt(value, 10);
+
+				if (isNaN(n) || (n <= 0)) return '';
+				if (n > 100) n = 100;
+				return '<div class="adblock-bar"><span class="app" style="width:' + n + '%"><\/span><\/div>';
+			}
+
+
+			function statusBarComposite(totalKB, appKB, bufKB, cacheKB) {
+				var t = parseInt(totalKB || 0, 10);
+				var a = Math.max(0, parseInt(appKB || 0, 10));
+				var b = Math.max(0, parseInt(bufKB || 0, 10));
+				var c = Math.max(0, parseInt(cacheKB || 0, 10));
+				// if total not provided, fall back to sum of segments so percentages can be computed
+				if (!t) {
+					var sum = a + b + c;
+					if (sum > 0) t = sum; else return '';
+				}
+				var aPct = Math.round(a * 100 / t);
+				var bPct = Math.round(b * 100 / t);
+				var cPct = Math.round(c * 100 / t);
+				// ensure total not exceeding 100
+				if (aPct + bPct + cPct > 100) {
+					var over = (aPct + bPct + cPct) - 100;
+					if (cPct >= over) cPct -= over; else if (bPct >= over) bPct -= over; else aPct -= over;
+				}
+				var html = '<div class="adblock-bar">';
+				if (aPct > 0) html += '<span class="app" style="width:' + aPct + '%"><\/span>';
+				if (bPct > 0) html += '<span class="buffers" style="width:' + bPct + '%"><\/span>';
+				if (cPct > 0) html += '<span class="cache" style="width:' + cPct + '%"><\/span>';
+				html += '<\/div>';
+				return html;
+			}
+			function statusRow(label, value, note, bar) {
+				return '<tr><th>' + escapeHTML(label) + '<\/th><td>' + escapeHTML(value)
+					+ (note ? '<span class="adblock-note">' + escapeHTML(note) + '<\/span>' : '')
+					+ (bar || '') + '<\/td><\/tr>';
+			}
+
+			function verifyFields(focused, quiet) {
+				var ok = 1;
+				cookie.set(cprefix + '_refresh', adblock_refresh);
+
+				return ok;
+			}
+
+			var ref = new TomatoRefresh(' ', ' ', 3, 'advanced_adblock_refresh');
+			ref.refresh = function (text) {
+				try {
+					eval(text);
+				}
+				catch (ex) {
+				}
+				adblockStatus();
+			}
+
+			adblockg.resetNewEditor = function () {
+				var f;
+
+				f = fields.getAll(this.newEditor);
+				ferror.clearAll(f);
+				f[0].checked = 1;
+				f[1].value = '';
+				f[2].value = '';
+			}
+
+			adblockg.setup = function () {
+				this.init('adblock-grid', '', 50, [
+					{ type: 'checkbox', prefix: '<div class="centered">', suffix: '<\/div>' },
+					{ type: 'text', maxlen: 130 },
+					{ type: 'text', maxlen: 40 }
+				]);
+				this.headerSet(['On', 'Blacklist URL', 'Description']);
+				var s = nvram.adblock_blacklist.split('>');
+				for (var i = 0; i < s.length; ++i) {
+					var t = s[i].split('<');
+					if (t.length == 3) this.insertData(-1, t);
+				}
+				this.showNewEditor();
+				this.resetNewEditor();
+			}
+
+			function save() {
+				var data = adblockg.getAllData();
+				var blacklist = '';
+				for (var i = 0; i < data.length; ++i) {
+					blacklist += data[i].join('<') + '>';
+				}
+
+				var fom = E('t_fom');
+				fom.adblock_enable.value = E('_f_adblock_enable').checked ? 1 : 0;
+				fom.adblock_logs.value = fom.f_adblock_logs.value;
+				fom.adblock_limit.value = mbToBytes(fom.f_adblock_limit.value);
+				fom.adblock_path.value = fom.f_adblock_path.value.replace(/\/+$/, '');
+				fom.adblock_blacklist.value = blacklist;
+				form.submit(fom, 1);
+				setTimeout(function () { adblockStatus(); }, 2000);
+			}
+
+			function init() {
+				var c;
+				if (((c = cookie.get(cprefix + '_notes_vis')) != null) && (c == '1'))
+					toggleVisibility(cprefix, 'notes');
+
+				adblockg.recolor();
+				adblockStatus();
+				ref.initPage();
+				eventHandler();
+			}
+
+			function adblockMe(str) {
+				if (str == 'snapshot')
+					alert('Result saved in /tmp/adblock.snapshot.$now');
+
+				if (cmd1)
+					return;
+
+				cmd1 = new XmlHttp();
+
+				var c = '/usr/sbin/adblock ' + str;
+				cmd1.post('shell.cgi', 'action=execute&command=' + escapeCGI(c.replace(/\r/g, '')));
+				cmd1 = null;
+				setTimeout(function () { adblockStatus(); }, 500);
+			}
+
+			function displayStatus() {
+				var s = parseStatusData(cmdresult);
+				var blockTone;
+				var html;
+
+				if (!s.version) {
+					// clear the per-row placeholders (no status)
+					for (var i = 1; i <= 8; i++) if (E('adblock-status-' + i)) elem.setInnerHTML(E('adblock-status-' + i), '');
+					cmdresult = '';
+					return;
+				}
+
+				blockTone = (s.block_state == 'Loaded') ? 'ok' : ((s.block_state == 'Parked' || s.block_state == 'Loading') ? 'warn' : 'bad');
+				// Compose memory note and small bars for Buffers/Cache
+				var memNote = (s.memory_percent || '0') + '% used';
+				// build memory bars using raw KB values if provided
+				var totalKB = parseInt(s.memory_total_kb || (String(s.memory || '').replace(/.*\/\/(.*) KBytes/, '$1').replace(/[^0-9]/g, '')), 10) || 0;
+				var bufKB = parseInt(s.memory_buffers || 0, 10) || 0;
+				var cacheKB = parseInt(s.memory_cache || 0, 10) || 0;
+				var bufPct = totalKB ? Math.round(bufKB * 100 / totalKB) : 0;
+				var cachePct = totalKB ? Math.round(cacheKB * 100 / totalKB) : 0;
+
+				html = '<div class="adblock-status-head">'
+					+ statusBadge(s.enabled || 'Disabled', (s.enabled == 'Enabled') ? 'ok' : 'warn')
+					+ statusBadge('dnsmasq', (s.dnsmasq == 'Online') ? 'ok' : 'bad')
+					+ (s.mapped == 'Yes' ? statusBadge('BlockFile mapped', 'ok') : statusBadge('BlockFile not mapped', 'bad'))
+					+ (function () {
+						var bs = String(s.block_state || '').trim();
+						var blockBadge = '';
+						if (bs === 'Loaded') blockBadge = statusBadge('BlockFile loaded', 'ok');
+						else if (bs === 'Parked') blockBadge = statusBadge('BlockFile parked', 'warn');
+						else if (bs === 'Loading') blockBadge = statusBadge('BlockFile loading', 'warn');
+						else blockBadge = statusBadge('BlockFile not loaded', 'bad');
+						// Hold badge: if hold is empty or 'Off' -> green ok, otherwise amber warn
+						var hold = String(s.hold || '').trim();
+						var holdBadge;
+						if (hold === '' || /off/i.test(hold)) {
+							holdBadge = statusBadge('Hold updates off', 'ok');
+						}
+						else {
+							// If hold contains a minute count like '30 min' or '30 min left', show 'Hold updates for 30 min'
+							var m = hold.match(/([0-9]+)\s*min/i);
+							if (m) {
+								holdBadge = statusBadge('Hold updates for ' + m[1] + ' min', 'warn');
+							}
+							else {
+								holdBadge = statusBadge('Hold updates for ' + escapeHTML(hold), 'warn');
 							}
 						}
-					done
-					continue
+						return blockBadge + holdBadge;
+					})()
+					+ '<\/div>'
+					+ '<table class="adblock-status-view">'
+					+ statusRow('Version', s.version || 'N/A', '')
+					+ (function () {
+						var act = s.activity || 'Idle';
+						var mode = (act == 'Idle') ? 'ok' : ((/loading/i.test(act)) ? 'bad' : 'warn');
+						var info = s.activity_info ? '<span class="adblock-note-inline">' + escapeHTML(s.activity_info) + '<\/span>' : '';
+						// show spinner only for Loading or Checking (case-insensitive)
+						var showSpinner = /loading|checking/i.test(act);
+						var spinner = showSpinner ? '<img src="spin.svg" class="adblock-spinner" alt="">' : '';
+						return '<tr><th>Activity<\/th><td>' + statusBadge(act, mode) + spinner + info + '<\/td><\/tr>';
+					})()
+					+ (function () {
+						var owner = s.owner || 'unknown';
+						var mode = (owner == 'root') ? 'warn' : 'ok';
+						var ownerDisplay = statusBadge(owner, mode);
+						var restarts = escapeHTML(String((s.restarts || '0')));
+						return '<tr><th>dnsmasq<\/th><td>' + ownerDisplay + ' - <span class="adblock-note-inline">Restarts today: ' + restarts + '<\/span><\/td><\/tr>';
+					})()
+					+ (function () {
+						// Adblock errors and last run/calls — render Errors as a badge (green when 0, red otherwise)
+						var errs = String(s.last_errors || '0');
+						function fmtLastRuntime(rt) {
+							if (!rt) return 'N/A';
+							var h = 0, m = 0, sec = 0;
+							var hm = /([0-9]+)h/.exec(rt); if (hm) h = parseInt(hm[1], 10);
+							var mm = /([0-9]+)m/.exec(rt); if (mm) m = parseInt(mm[1], 10);
+							var sm = /([0-9]+)s/.exec(rt); if (sm) sec = parseInt(sm[1], 10);
+							function pad(n) { return (n < 10) ? ('0' + n) : ('' + n); }
+							if (h === 0) return pad(m) + 'm ' + pad(sec) + 's';
+							return h + 'h ' + pad(m) + 'm ' + pad(sec) + 's';
+						}
+						var lastRunStr = fmtLastRuntime(s.last_runtime);
+						var calls = String(s.calls || '0');
+						// choose badge colour: ok when zero, bad otherwise
+						var errMode = (parseInt(errs.replace(/[^0-9-]/g, ''), 10) === 0) ? 'ok' : 'bad';
+						var errBadge = statusBadge('Errors: ' + errs, errMode);
+						var html = '<tr><th>Adblock<\/th><td>Last run:  ' + escapeHTML(lastRunStr) + ' - ' + escapeHTML(calls) + ' calls today - ' + errBadge + '<\/td><\/tr>';
+						return html;
+					})()
+					+ (function () {
+						// robust parsing: prefer explicit keys, else parse s.memory
+						var total = parseInt(s.memory_total_kb || 0, 10) || 0;
+						var usedKB = parseInt(s.memory_used_kb || 0, 10) || 0;
+						if (!total || !usedKB) {
+							// try parse s.memory like "used / total KB"
+							var m = String(s.memory || '') || '';
+							var parts = m.match(/(\d+)\s*\/\s*(\d+)\s*KB/);
+							if (parts && parts.length >= 3) {
+								usedKB = usedKB || parseInt(parts[1], 10) || 0;
+								total = total || parseInt(parts[2], 10) || 0;
+							}
+						}
+						var bufKB = parseInt(String(s.memory_buffers || '0').replace(/,/g, ''), 10) || 0;
+						var cacheKB = parseInt(String(s.memory_cache || '0').replace(/,/g, ''), 10) || 0;
+						var usedKBClean = parseInt(String(usedKB).replace(/,/g, ''), 10) || 0;
+						// Determine app (application) portion. If usedKB is smaller than buf+cache, fall back
+						// to treating app as usedKB so it is visible rather than disappearing.
+						var appKB = Math.max(0, usedKBClean - bufKB - cacheKB);
+						if ((appKB === 0) && (usedKBClean > 0)) appKB = usedKBClean;
+						// compute percent
+						var pctNum = 0;
+						if (total > 0) pctNum = (usedKBClean * 100) / total;
+						var pctStr = (Math.round(pctNum * 10) / 10).toFixed(1);
+
+						// helper: format KB -> short MB with one decimal (always show one decimal)
+						function fmtKBtoMB(kb) {
+							var k = parseInt(kb || 0, 10) || 0;
+							var mb = k / 1024;
+							var s = (Math.round(mb * 10) / 10).toFixed(1);
+							return s + ' MB';
+						}
+
+						var usedShort = fmtKBtoMB(usedKBClean);
+						var totalShort = fmtKBtoMB(total);
+						var bufShort = fmtKBtoMB(bufKB);
+						var cacheShort = fmtKBtoMB(cacheKB);
+
+						// New layout: Used: <used> (<pct>%) - Buffers: <buf> - Cache: <cache> / <total>
+						var valueStr = 'Used: ' + usedShort + ' (' + pctStr + '%) - Buffers: ' + bufShort + ' - Cache: ' + cacheShort + ' / ' + totalShort;
+						return statusRow('Memory', valueStr, '', statusBarComposite(total, appKB, bufKB, cacheKB));
+					})()
+					+ (function () {
+						var refs = s.block_refs || '0 Domains';
+						// compute precise percent from numeric sizes
+						var sizeNum = parseInt(String(s.block_size || '0').replace(/[^0-9]/g, ''), 10) || 0;
+						var limitNum = parseInt(String(s.block_limit || '0').replace(/[^0-9]/g, ''), 10) || 0;
+						var pctNumStr = '';
+						if (limitNum > 0) {
+							var pv = (sizeNum * 100) / limitNum;
+							pctNumStr = (Math.round(pv * 10) / 10).toFixed(1) + '%';
+						}
+						var dateStr = s.block_date ? String(s.block_date) : '';
+						// normalize refs to "Domains NNN" format when possible
+						var refsMatch = String(refs).match(/^(\s*([0-9,]+)\s*)Domains\s*$/i);
+						var refsText = refs;
+						if (refsMatch) refsText = 'Domains: ' + refsMatch[2];
+						// helper: format bytes into short MB representation
+						function fmtMB(bytes) {
+							var b = parseInt(bytes || 0, 10) || 0;
+							// Use decimal MB (1 MB = 1,000,000 bytes)
+							var mb = b / 1000000;
+							var s = (Math.round(mb * 10) / 10).toFixed(1);
+							if (s.match(/\.0$/)) s = s.replace(/\.0$/, '');
+							return s + ' MB';
+						}
+						var sizeShort = fmtMB(sizeNum);
+						var limitShort = (limitNum > 0) ? fmtMB(limitNum) : String(s.block_limit || 'Auto').replace(/Bytes/g, 'B');
+						var pctPart = pctNumStr ? (' (' + pctNumStr + ')') : '';
+						var datePart = dateStr ? (' | ' + dateStr) : '';
+						// New layout: Domains: N | <size> (<pct>) / <limit> | <date>
+						return statusRow('Blockfile', refsText + ' | ' + sizeShort + pctPart + ' / ' + limitShort + datePart, '', statusBar(s.block_percent));
+					})()
+					+ statusRow('Trace', s.trace || 'Off')
+					+ '<\/table>';
+
+				// populate per-row placeholders by parsing the generated html fragment
+				try {
+					var tmp = document.createElement('div');
+					tmp.innerHTML = html;
+					var head = tmp.querySelector('.adblock-status-head');
+					if (head && E('adblock-status-1')) elem.setInnerHTML(E('adblock-status-1'), head.innerHTML);
+					var rows = tmp.querySelectorAll('table.adblock-status-view tr');
+					for (var ri = 0; ri < rows.length; ri++) {
+						var th = rows[ri].querySelector('th');
+						var td = rows[ri].querySelector('td');
+						var idx = ri + 2; // map first row -> status-2
+						if (!E('adblock-status-' + idx)) continue;
+						var content = td ? td.innerHTML : '';
+						// Put only the content in the right column to avoid duplicating labels
+						elem.setInnerHTML(E('adblock-status-' + idx), content);
+					}
 				}
-				ENTRIES=$(notin "$D/${uriname}.list" | wc -l)
-				[ $ENTRIES -le 1 ] && {
-					logw "[$COUNT][$URL] The list appears to be empty! Skipping..."
-					erroradd
-				} || {
-					logi "[$COUNT][$URL] Found $(echo $ENTRIES|number) entries"
-					parsefile "$D/${uriname}.list" "$URL" "$COUNT"
+				catch (ex) {
+					// fallback: set first placeholder to the whole html
+					if (E('adblock-status-1')) elem.setInnerHTML(E('adblock-status-1'), html);
+				}
+				cmdresult = '';
+			}
+
+			function adblockStatus() {
+				if (cmd2)
+					return;
+
+				cmd2 = new XmlHttp();
+				cmd2.onCompleted = function (text, xml) {
+					eval(text);
+					displayStatus();
+					cmd2 = null;
+				}
+				cmd2.onError = function (x) {
+					cmd2 = null;
+				}
+				var c = '/usr/sbin/adblock status-data';
+				cmd2.post('shell.cgi', 'action=execute&command=' + escapeCGI(c.replace(/\r/g, '')));
+			}
+
+			function earlyInit() {
+				adblockg.setup();
+				verifyFields(null, true);
+				insOvl();
+			}
+
+			/* Determine Delimiter/Separator */
+			function determineDelimiter(inputString) {
+				const lines = inputString.split(/\r?\n/);
+				let isSpaceDelimited = false;
+				var i = 0
+				for (const line of lines) {
+					const trimmedLine = line.trim();
+					if (trimmedLine.startsWith('#') || trimmedLine === '') {
+						continue;
+					}
+					const units = trimmedLine.split(' ');
+					if (units.length > 1)
+						return ' ';
+					else if (i > 1)
+						return '\n';
+
+					i += 1;
 				}
 			}
-		} || {
-			logi "[$COUNT][$URL][$uriname] Disabled."
-		}
-	done
 
-	# CUSTOM BLACKLIST
-	[ $(echo $CUSTOM | wc -c) -gt 2 ] && {
-		[ -f $TM1 ] && rm -f $TM1
-		echo $CUSTOM | tr " " "\n" | grep -Ev '^($|#|!)' | while read i; do
-			echo "$i" | grep -Eq '^/.*' && {
-				[ -f $i ] && {
-					while IFS= read -r dom || [ -n "$dom" ]; do printf '%s\n' "$dom"; done < $i | tr -d "\r" | grep -Ev '^($|#|!)' | while read m; do
-						echo "$m" | grep -Eq '^\+' && { sed -i "s/^[a-zA-Z0-9.-]\{0,64\}\.]\{0,1\}$(echo $m | cut -c2- | domain)\|^$(echo $m | cut -c2- | domain)//g" $TM ; echo $(echo $m | sed "s/^[a-zA-Z0-9.-]\{0,64\}\.]\{0,1\}$(echo $m | domain)\|^$(echo $m | domain)//g" | domain ) >> $TM1 ; } || { echo "$m" >> $TM1 ; }
-					done
-				} || loge "The defined custom blacklist file $i is not accessible"
-			} &>/dev/null || {
-				echo "$i" | grep -Eq '^\+' && { sed -i "s/^[a-zA-Z0-9.-]\{0,64\}\.]\{0,1\}$(echo $i | cut -c2- | domain)\|^$(echo $i | cut -c2- | domain)//g" $TM ; echo $(echo $i | sed "s/^[a-zA-Z0-9.-]\{0,64\}\.]\{0,1\}$(echo $i | domain)\|^$(echo $i | domain)//g" | domain ) >> $TM1 ; } || { echo "$i" >> $TM1 ; }
-			} &>/dev/null
-		done
+			/* Sort Domains */
+			function sortDomains(element) {
+				var textarea = E(element);
+				var delimiter = determineDelimiter(textarea.value.trim());
+				var splitDomains = textarea.value.split(delimiter).map((domain) => domain.trim().split(".").reverse());
+				const regex = /[%!#+\s]/g
+				splitDomains.sort((a, b) => {
+					var aList = a.map(item => item.replace(regex, ''));
+					var bList = b.map(item => item.replace(regex, ''));
+					var aSeg = aList[1], bSeg = bList[1];
 
-		COUNT_CUSTOM=$(wc -l < $TM1)
-		logi "Added $(echo $COUNT_CUSTOM|number) custom-blacklisted domains"
-		# Append custom blacklist to FINAL
-		cat $TM1 >> $TM && rm -f $TM1
-	}
+					if (aSeg === undefined || bSeg === undefined) { return 0; }
+					if (a.length > 2 && aList[0].length === 2 && aSeg.length <= 3)
+						aSeg = aList[2];
 
-	# WHITELISTING
+					if (b.length > 2 && bList[0].length === 2 && bSeg.length <= 3)
+						bSeg = bList[2];
 
-	# Hardcoded whitelisting:
-	logi "Whitelisting domains used in other parts of FreshTomato"
-	# System domains:
-	subsed="freshtomato.org groov.pl linksysinfo.org"
-	# TTB
-	subsed="$subsed tomatothemebase.eu"
-	for i in $(NG "ttb_url" | tr " " "\n" | domain); do subsed="$subsed ${i}"; done
+					var domainCompare = aSeg.toLowerCase().localeCompare(bSeg.toLowerCase());
+					if (domainCompare !== 0) return domainCompare;
 
-	# OpenVPN/PPTP/Tinc
-	subsed="$subsed $(NG vpnc1_addr | domain)"
-	subsed="$subsed $(NG vpnc2_addr | domain)"
-	subsed="$subsed $(NG vpnc3_addr | domain)"
-	subsed="$subsed $(NG pptpc_srvip | domain)"
-	subsed="$subsed $(NG wg0_peers | domain)"
-	subsed="$subsed $(NG wg1_peers | domain)"
-	subsed="$subsed $(NG wg2_peers | domain)"
-	for i in $(NG tinc_hosts | tr "<>" "\n" | domain); do subsed="$subsed ${i}"; done
+					var tldCompare = aList[0].toLowerCase().localeCompare(bList[0].toLowerCase());
+					if (tldCompare !== 0) return tldCompare;
 
-	# NTP & Stubby
-	for i in $(NG ntp_server | tr " " "\n" | domain); do subsed="$subsed ${i}"; done
-	for i in $(NG stubby_resolvers | tr ">" "\n" | domain); do subsed="$subsed ${i}"; done
+					var i = 1;
+					while (true) {
+						var aSeg = aList[i], bSeg = bList[i];
 
-	# DDNS and mwan test
-	[ $(NG ddnsx0 | grep -Eo "^[a-zA-Z0-9]*" || echo 0) == "custom" ] && subsed="$subsed $(NG ddnsx0 | domain)" || subsed="$subsed $(grep "\['"$(NG ddnsx0 | grep -Eo "^[a-zA-Z0-9]*")"'" /www/basic-ddns.asp 2>/dev/null | domain | head -1)"
-	[ $(NG ddnsx1 | grep -Eo "^[a-zA-Z0-9]*" || echo 0) == "custom" ] && subsed="$subsed $(NG ddnsx1 | domain)" || subsed="$subsed $(grep "\['"$(NG ddnsx1 | grep -Eo "^[a-zA-Z0-9]*")"'" /www/basic-ddns.asp 2>/dev/null | domain | head -1)"
-	[ $(NG ddnsx2 | grep -Eo "^[a-zA-Z0-9]*" || echo 0) == "custom" ] && subsed="$subsed $(NG ddnsx1 | domain)" || subsed="$subsed $(grep "\['"$(NG ddnsx2 | grep -Eo "^[a-zA-Z0-9]*")"'" /www/basic-ddns.asp 2>/dev/null | domain | head -1)"
-	[ $(NG ddnsx3 | grep -Eo "^[a-zA-Z0-9]*" || echo 0) == "custom" ] && subsed="$subsed $(NG ddnsx1 | domain)" || subsed="$subsed $(grep "\['"$(NG ddnsx3 | grep -Eo "^[a-zA-Z0-9]*")"'" /www/basic-ddns.asp 2>/dev/null | domain | head -1)"
-	[ "$(NG ddnsx_ip)" == "@" ] && subsed="$subsed checkip.dyndns.org dynamic.zoneedit.com ip1.dynupdate.no-ip.com myip.dnsomatic.com myip.pairnic.com ip.changeip.com"
+						if (aSeg === undefined && bSeg === undefined)
+							return 0;
+						else if (aSeg === undefined)
+							return -1;
+						else if (bSeg === undefined)
+							return 1;
 
-	# Whitelist domains from list providers defined
-	logi "Whitelisting domains defined in Blacklist URL"
-	for i in $(echo $BLACKLIST | tr "<" "\n" | grep -E 'https?' | url_domains); do
-		subsed="$subsed ${i}"
-	done
+						var subCompare = aSeg.toLowerCase().localeCompare(bSeg.toLowerCase());
+						if (subCompare !== 0) return subCompare;
 
-	# Whitelist domains defined in Group-of-lists content
-	[[ -f $PREFIX/white.url ]] && {
-		logd "Whitelisting domains found in Group-of-lists URLs"
-		for i in $(url_domains "$PREFIX/white.url"); do
-			subsed="$subsed ${i}"
-		done
-	}
-
-	# User-defined whitelisting:
-	[ -f $TM1 ] && rm $TM1
-	[ $(echo $WHITELIST | wc -c) -gt 2 ] && {
-		logi "Whitelisting user-defined domains"
-		# Individual domains
-		[ ! -z ${WHITELIST+1} ] && for i in $(echo "$WHITELIST" | tr " " "\n" | grep -Ev '^($|#|!)' | grep -Ev '^/'); do subsed="$subsed ${i}"; done
-		# User defined whitelist file
-		[ ! -z ${WHITELIST+1} ] && for i in $(echo "$WHITELIST" | tr " " "\n" | grep -Ev '^($|#|!)' | grep -E '^/'); do if [[ -f ${i} ]]; then while IFS= read -r dom || [ -n "$dom" ]; do printf '%s\n' "$dom"; done < $i | grep -Ev '^($|#|!)' | tr -d "\r" >> $TM1 ; else loge "The defined whitelist file $i is not accessible"; erroradd ;fi done
-		[ -s $TM1 ] && subsed="$subsed $(tr '\n' ' ' < "$TM1")"
-	}
-	
-	# Remove references to localhost
-	subsed="$subsed localhost" # localhost to be fixed, used to be: "^address=\/localhost\/.*"
-	subsed="$(echo "$subsed" | tr ' ' '\n' | grep -v '^$' | awk '!seen[$0]++' | tr '\n' ' ')"
-	[ $LOGL -eq 7 ] && echo $subsed >$SUBSED_FILE
-
-	# Whitelisting phase A = Removing whitelisted domains/subdomains and formatting the file for dnsmasq
-	echo "$subsed" | tr ' ' '\n' | sed -e 's/^%//' -e 's/\./\\./g' -e 's/^/(^|\\.)/' -e 's/$/$/' | grep -v '^$' > $TM1
-	grep -Evf $TM1 $TM | sed -e '/^$/d' -e "s/.*/local=\/&\//" > $TM1.1 && mv -f $TM1.1 $TM
-	# Whitelisting phase B = Add exceptions for whitelisted subdomains whose parent domain is blacklisted
-	whitish=$(echo $subsed | tr " " "\n" | grep -E '^[0-9a-z]|^%[0-9a-z]' | sed 's/^%//' | grep -E '^[^.]+\.([^.]+\.)+[^.]*$' | sort -u | while read k; do for p in $(w=$(echo $k | grep -Eo '\.\w.*+' | cut -c2-50) && cat $TM | grep "$w" | grep -Eo $w | sort -u ); do [ ! -z $k ] && { echo "$k";} ; done ;done)
-	[ $LOGL -eq 7 ] && echo $whitish >$WHITISH_FILE
-	echo ${whitish} | grep -vq ^$ && { echo ${whitish} | tr " " "\n" | grep -v ^$ | while read l; do echo "server=/$l/#" >> $TM ; done ;}
-	# Whitelisting phase C = Handle strict whitelisted domains (don't allow any subdomain resolution)
-	whitis=$(echo $subsed | tr " " "\n" | grep -v ^$ | grep -E '^%.*' | domain | while read l; do echo "$l"; done ;)
-	[ $LOGL -eq 7 ] && echo $whitis >$WHITIS_FILE
-	echo ${whitis} | grep -vq ^$ && { echo ${whitis} | tr " " "\n" | while read l; do echo "local=/.$l/" >> $TM ; done ;}
-
-	# DE-DUPLICATION
-	logn "Removing duplicates"
-	pred=$(wc -l < $TM)
-	[ $DPATH != '/etc' ] && {
-		# Let's use external storage to halve the RAM needed for deduplication
-		mv -f $TM $D
-		awk '!seen[$0]++' $D/adblock.temp > $TM
-		rm -f $D/adblock.temp
-	} || {
-		# No external storage available? No problem we'll use what we have
-		awk '!seen[$0]++' $TM > $TM1 && mv -f $TM1 $TM
-	}
-	redun=$(($pred - $(wc -l < $TM) ))
-	logi "Deduplication efficiency = $(printf "%.2f" $(( 10**2 * $redun * 100 / $pred ))e-2)"%" / $redun lines removed."
-	# Applying sizeLimit
-	# Trim down to the hard limit (trim from the top) the adblock file
-	[ $(wc -c < $TM) -gt $sizeLimit	] && {
-		logw "️$(wc -c < $TM ) bytes are too much. Please consider defining fewer and/or smaller lists of domains."
-		logn "Trimming down $TM to the hardcoded limit of $(echo $sizeLimit | number) Bytes before proceeding."
-		TRIM=$(( $(wc -l < $TM) - $(tail -c $sizeLimit < $TM | wc -l) +1 ))
-		vi $TM -c ":1,${TRIM}d" -c ":wq"
-	}
-
-	# Cleaning after myself
-	[ $DPATH != '/etc' ] && cp -fp ${ADHEAD} ${D}
-	mv -f $TM $FINAL
-	rm -rf $PREFIX/*
-	# Final verification
-	[ -s "$FINAL" -a "$ENTRIES" -gt 0 ] || [ "$COUNT_CUSTOM" -ne 0 ] && {
-		logi "$FINAL is now populated with $(wc -l < $FINAL | number) lines in $(wc -c < $FINAL | number) Bytes"
-		echo "$(hashblack | md5file) md5black" > $CHK_FILE
-		echo "$(hashwhite | md5file) md5white" >> $CHK_FILE
-		echo "=BC+" >> $CHK_FILE
-		hashblack | grep -A99999 =BC+ | grep -B99999 =BCF+ | grep -v ^= >> $CHK_FILE
-		echo "=BCF+" >> $CHK_FILE
-		echo "=W+" >> $CHK_FILE
-		hashwhite | grep -A99999 =W+ | grep -v ^= >> $CHK_FILE
-		echo "=WF+" >> $CHK_FILE
-	}
-}
-
-parsefile() {
-	[ -n "$4" ] && S="[$4]"
-	if [ $(notin "$1" | head -500 | grep -iE '<html|<head|<body' | wc -l ) -gt 0 ]; then
-		# Skip loop if CheckHTML is matched
-		loge "[$3]$S[$2] List content not understood (HTML?). Skipping..."
-		erroradd
-		continue
-	elif [ $(notin "$1" | head -500 | grep -iE '^\[.*]' | wc -l ) -gt 0 ]; then
-		# Skip loop if Content is in Easylist/Adblock-Plus format
-		loge "[$3]$S[$2] Detected Easylist format (unsupported). Skipping..."
-		erroradd
-		continue
-	elif [ $(notin "$1" | head -500 | grep -E '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$' | wc -l ) -gt 0 ]; then
-		# Skip loop if IP-only is matched
-		loge "[$3]$S[$2] List content not understood (IP-only?). Skipping..."
-		erroradd
-		continue
-	elif [ $(notin "$1" | head -500 | domain | wc -l ) -gt 0 ]; then
-		# Extract domains only
-		logi "[$3]$S[$2] Extracting domains..."
-		notin $1 | domain >> $TM
-	else
-		loge "[$3]$S[$2] List content not understood (unknown data). Skipping..."
-		erroradd
-	fi
-}
-
-cronAdd() {
-	cru l | grep -q adblockJob || {
-		MINS=$((2 + $RANDOM % 56)) # Between 02 and 58min for each hour
-		HOUR=$((3 + $RANDOM % 2))  # Between 03:02 and 05:58
-		cru a adblockJob "$MINS $HOUR * * * /usr/sbin/adblock update"
-		logi "Added cron job for automatic updates"
-	}
-}
-
-cronDel() {
-	cru l | grep -q adblockJob && {
-		cru d adblockJob
-		logi "Removed cron job for updates"
-	}
-}
-
-countdownDnsmasq() {
-	c=0; while [ "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" != "nobody" -a $c -lt 10 ]; do
-		c=$((c+1)); sleep 2
-	done
-	[ ! -z "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" -a "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" == "nobody" ] && echo 0 || echo 1 ;
-}
-
-safeDnsmasqRestart() {
-	[ "$1" -eq 0 ] && { # Run only for update
-		logi "Checking $FINAL syntax"
-		# Case A = $FINAL syntax issue detected, log and exclude adblock until next reboot
-		[ -s $FINAL ] && {
-			dnsmasq --test -C $FINAL &>$DNSMASQ_TEST && logi "No syntax errors found in $FINAL" || {
-				NS adblock_enable=0
-				dnsrestart
-				loge "Syntax error found in $FINAL. Adblock has been temporarily excluded from /etc/dnsmasq.conf to prevent dnsmasq issues. More information on this error can be found in $DNSMASQ_TEST"
-				erroradd
-				return 1
+						i += 1;
+					}
+				});
+				var sortedDomains = splitDomains.map((segments) => segments.reverse().join("."));
+				textarea.value = sortedDomains.join(delimiter).trim();
 			}
-		}
-	}
-	SIZE=$(wc -l < $FINAL)
-	TRIM=$(echo $((( $SIZE / 100 ) * $TRIMPERC ))) # 5% of the entry filesize
-	# Case B = dnsmasq restart correctly, e.g. ignore the other conditions and exit
-	logi "Invoking safeDnsmasqRestart()"
-	dnsrestart
-	# Case C = dnsmasq didn't change ownership to nobody within 20 secs. Attempt a file trim:
-	[ $(countdownDnsmasq) -eq 1 ] && {
-		i=0; while [ ! -z "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" -a "$(ps | grep '[d]nsmasq.*async$' | awk '{print $2}')" != "nobody" -a $i -lt 10 ]; do
-			# Attempts the trim maximum 10 times (up to 50% of the file)
-			i=$((i+1))
-			SIZEE=$(wc -l < $FINAL)
-			LINES=$((SIZEE-TRIM))
-			logw "Dnsmasq cannot handle $(echo $SIZEE | number) lines, they are still too many."
-			logn "Trimming down $FINAL by $(echo $TRIMPERC)% to $(echo $LINES | number) lines"
-			mv $FINAL "$FINAL.recovery"
-			vi "$FINAL.recovery" -c ":1,${TRIM}d" -c ":wq"
-			mv "$FINAL.recovery" $FINAL
-			dnsrestart
-			[ $(countdownDnsmasq) -eq 1 ] && continue || {
-				sizeLimit=$(wc -c < $FINAL)
-				NS adblock_limit=${sizeLimit}
-				NC
-				logi "safeDnsmasqRestart() successfully trimmed down $FINAL from $(echo $SIZE|number) to $(wc -l < $FINAL|number) lines. Now it should work."
-				return 0
-			}
-		done
-		# Case D = Shit happens; like for Case A, log and exclude adblock as a whole
-		[ $(countdownDnsmasq) -eq 1 ] && { # this is run only if 10x trim is not good enough
-			NS adblock_enable=0
-			dnsrestart
-			loge "safeDnsmasqRestart(). Something unexpected happened. Dnsmasq cannot run with adblock enabled. Adblock has been temporarily disabled."
-			erroradd
-			return
-		}
-	} || logi "safeDnsmasqRestart() completed smoothly with $FINAL = $(wc -l < $FINAL|number) lines in $(wc -c < $FINAL|number) Bytes."; return
-}
-adExit() {
-	[ -z "$EXIT_REASON" ] && [ $1 -eq 0 ] && EXIT_REASON="Adblock/DNS-filtering completed successfully."
-	[ -z "$EXIT_REASON" ] && EXIT_REASON="Adblock/DNS-filtering exited."
-	rm -rf $PREFIX/*
-	rm -f $pidfile
-	if [ $1 -eq 0 ]; then
-		[ $DPATH != '/etc' ] && {
-			rm -f /etc/dnsmasq.adblock
-			ln -s $FINAL /etc/dnsmasq.adblock 2>/dev/null
-		}
-		safeDnsmasqRestart $1
-	elif [ $1 -eq 1 ]; then
-		[ -s $FINAL ] && mv -f $FINAL $UNLOADED
-		[ $DPATH != '/etc' ] && rm -f /etc/dnsmasq.adblock
-		rm -f $CHK_FILE
-		dnsrestart
-		for process in $(ps | grep [a]dblock | grep -v "status\|$PID" | awk '{print $1}'); do (kill -9 $process) &>/dev/null ; done
-	elif [ $1 -eq 4 ]; then
-		[ $DPATH != '/etc' ] && rm -rf $DPATH/*
-		rm -rf "$PREFIX"/* "$OPS"/*
-		rm -f /etc/dnsmasq.adblock
-		dnsrestart
-	fi
-	[ $ERRCOUNT -gt 0 ] && logo "$ERRCOUNT error/s were experienced."
-	runtime=$(date -d@$(( $(date +%s) - $pre)) -u +%H"h "%M"m "%Ss)
-	echo "errors: ${ERRCOUNT}" > $ADHELPER
-	echo "runtime: ${runtime}" >> $ADHELPER
-	echo "reason: ${EXIT_REASON}" >> $ADHELPER
-	logo "$EXIT_REASON"
-	logo "Exiting $@ - Execution time: ${runtime}"
-	exit $@
-}
 
-status_data() {
-	restarts=$(grep -E $(date +%b)" "+$(date +%d|sed 's/^0*//') /var/log/messages | grep -E '.*dnsmasq\[.*exiting' | wc -l )
-	calls=$(grep -E $(date +%b)" "+$(date +%d|sed 's/^0*//') /var/log/messages | grep "Kick off" | wc -l )
-	mapped=$([ $(grep 'conf-file=/etc/dnsmasq.adblock' /etc/dnsmasq.conf | wc -l) -eq 1 ] && echo "Yes" || echo "No")
-	# Read memory values from /proc/meminfo for portability across systems.
-	ramt=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
-	mem_free=$(awk '/^MemFree:/ {print $2}' /proc/meminfo)
-	mem_buffers=$(awk '/^Buffers:/ {print $2}' /proc/meminfo)
-	mem_cache=$(awk '/^Cached:/ {print $2}' /proc/meminfo)
-	mem_avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo "")
+		</script>
+</head>
 
-	[ -z "$ramt" ] && ramt=0
-	[ -z "$mem_free" ] && mem_free=0
-	[ -z "$mem_buffers" ] && mem_buffers=0
-	[ -z "$mem_cache" ] && mem_cache=0
+<body onload="init()">
+	<form id="t_fom" method="post" action="tomato.cgi">
+		<table id="container">
+			<tr>
+				<td colspan="2" id="header">
+					<div class="title"><a href="/">FreshTomato</a></div>
+					<div class="version">Version <% version(); %> on <% nv("t_model_name"); %><span
+									class="blinking bl2">
+									<script><% anonupdate(); %> anon_update()</script>&nbsp;
+								</span></div>
+				</td>
+			</tr>
+			<tr id="body">
+				<td id="navi">
+					<script>navi()</script>
+				</td>
+				<td id="content">
+					<div id="ident">
+						<% ident(); %> |
+							<script>wikiLink();</script>
+					</div>
 
-	if [ -n "$mem_avail" ]; then
-		# When MemAvailable exists use it (most accurate for used memory)
-		ramu=$(( ramt - mem_avail ))
-	else
-		# Fallback: used = total - free - buffers - cache
-		ramu=$(( ramt - mem_free - mem_buffers - mem_cache ))
-	fi
+					<!-- / / / -->
 
-	[ -z "$ramu" ] && ramu=0
-	rampu=0
-	[ "$ramt" -gt 0 ] && rampu=$(( ramu * 100 / ramt ))
-	load_avg=$(cat /proc/loadavg | awk '{print $1" / "$2" / "$3}')
-	dns_owner=$(ps | grep '[d]nsmasq.*async$' | awk 'NR==1 {print $2}')
-	[ -z "$dns_owner" ] && dns_owner="unknown"
-	owner="$dns_owner"
-	[ "$dns_owner" == "root" ] && owner="Restarting"
-	restart_time="N/A"
-	[ -f "$DNS_TIME" ] && restart_time=$(cat "$DNS_TIME")
-	activity="Idle"
-	activity_info=""
-	if [ -f "$pidfile" ]; then
-		if [ -f "$VRFY" ]; then
-			activity="Checking"
-		else
-			activity="Loading"
-			[ -s "$TM" ] && activity_info="$(wc -l < "$TM" | number) domains / $(wc -c < "$TM" | number) Bytes"
-		fi
-	fi
-	state="Not loaded"
-	refs="0 Domains"
-	size="0 Bytes"
-	limit="Auto"
-	percent=0
-	date="N/A"
-	blockfile=""
-	if [ -n "$sizeLimit" ] && [ "$sizeLimit" -gt 0 ]; then
-		limit="$(echo $sizeLimit | number) Bytes"
-	fi
-	if [ -s "$FINAL" ]; then
-		state="Loaded"
-		blockfile="$FINAL"
-	elif [ -s "$UNLOADED" ]; then
-		state="Parked"
-		blockfile="$UNLOADED"
-	elif [ -f "$TM" ]; then
-		state="Loading"
-		blockfile="$TM"
-	fi
-	if [ -n "$blockfile" ]; then
-		refs="$(wc -l < "$blockfile" | number) Domains"
-		size="$(wc -c < "$blockfile" | number) Bytes"
-		date="$(ls -lah "$blockfile" | awk '{print $8" on "$7" "$6}')"
-		if [ -n "$sizeLimit" ] && [ "$sizeLimit" -gt 0 ]; then
-			percent=$(( $(wc -c < "$blockfile") * 100 / $sizeLimit ))
-		fi
-	fi
-	errors=0
-	runtime="N/A"
-	reason="N/A"
-	if [ -s "$ADHELPER" ]; then
-		errors=$(grep '^errors:' "$ADHELPER" | awk '{print $2}')
-		runtime=$(grep '^runtime:' "$ADHELPER" | cut -d: -f2- | sed 's/^ //')
-		reason=$(grep '^reason:' "$ADHELPER" | cut -d: -f2- | sed 's/^ //')
-	fi
-	[ -z "$errors" ] && errors=0
-	[ -z "$runtime" ] && runtime="N/A"
-	[ -z "$reason" ] && reason="N/A"
-	trace="Off"
-	if [ $LOGL -eq 7 ]; then
-		trace=$(last_trace)
-		[ -z "$trace" ] && trace="On"
-	fi
-	hold_text="Off"
-	if [ -s "$CHK_FILE" -a -s "$FINAL" ]; then
-		HOLD_LEFT=$(( $hold - ($(date +%s) - $(date -r "$FINAL" +%s)) /60 ))
-		if [ "$HOLD_LEFT" -le $hold -a "$HOLD_LEFT" -gt 0 -a $(hashblack | md5file) == $([ -s "$CHK_FILE" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) ]; then
-			hold_text="${HOLD_LEFT} min left"
-		fi
-	fi
-	echo "ver=$ver"
-	echo "version=${ver:0:6}"
-	echo "enabled=$([ $ENABLE -eq 1 ] && echo Enabled || echo Disabled)"
-	echo "dnsmasq=$([ -f "/var/run/dnsmasq.pid" ] && echo Online || echo Offline)"
-	echo "owner=$owner"
-	echo "mapped=$mapped"
-	echo "activity=$activity"
-	echo "activity_info=$activity_info"
-	echo "calls=$calls"
-	echo "restarts=$restarts"
-	echo "restart_time=$restart_time"
-	echo "memory=$(echo $ramu | number) / $(echo $ramt | number) KBytes"
-	echo "memory_percent=$rampu"
-	# report Buffers and Cache separately for UI detailed view
-	mem_buffers=$(grep '^Buffers:' /proc/meminfo | awk '{print $2}')
-	mem_cache=$(grep '^Cached:' /proc/meminfo | awk '{print $2}')
-	[ -z "$mem_buffers" ] && mem_buffers=0
-	[ -z "$mem_cache" ] && mem_cache=0
-	# expose buffers/cache in KB and in MB (one decimal) for GUI
-	memory_used_mb=$(awk -v u="$ramu" 'BEGIN{printf "%.1f", u/1024}')
-	memory_total_mb=$(awk -v t="$ramt" 'BEGIN{printf "%.1f", t/1024}')
-	memory_buffers_mb=$(awk -v b="$mem_buffers" 'BEGIN{printf "%.1f", b/1024}')
-	memory_cache_mb=$(awk -v c="$mem_cache" 'BEGIN{printf "%.1f", c/1024}')
-	echo "memory_buffers=$mem_buffers"
-	echo "memory_cache=$mem_cache"
-	echo "memory_used_mb=$memory_used_mb"
-	echo "memory_total_mb=$memory_total_mb"
-	echo "memory_buffers_mb=$memory_buffers_mb"
-	echo "memory_cache_mb=$memory_cache_mb"
-	# also expose raw values for JS percent calculations (KB)
-	echo "memory_total_kb=$ramt"
-	echo "memory_used_kb=$ramu"
-	echo "load=$load_avg"
-	echo "block_state=$state"
-	echo "block_dest=$DPATH"
-	echo "block_refs=$refs"
-	echo "block_size=$size"
-	echo "block_limit=$limit"
-	echo "block_percent=$percent"
-	echo "block_date=$date"
-	echo "last_errors=$errors"
-	echo "last_runtime=$runtime"
-	echo "last_reason=$reason"
-	echo "trace=$trace"
-	echo "hold=$hold_text"
-}
+					<input type="hidden" name="_nextpage" value="advanced-adblock.asp">
+					<input type="hidden" name="_service" value="adblock-restart">
+					<input type="hidden" name="adblock_enable">
+					<input type="hidden" name="adblock_logs">
+					<input type="hidden" name="adblock_path">
+					<input type="hidden" name="adblock_limit">
+					<input type="hidden" name="adblock_blacklist">
 
-# STARTS HERE --------------------------------------------------------------------------------
+					<!-- / / / -->
 
-# Skip execution (and stop adblock if running) if internal DNS is disabled
-[ $(NG dhcpd_dmdns) -eq 0 -a $ENABLE -eq 1 ] && {
-	EXIT_REASON="Internal DNS is disabled! Adblock/DNS-filtering is enabled but cannot run. Exiting..."
-	echo "$EXIT_REASON" | tee /dev/tty >/dev/null 2>/dev/null
-	erroradd
-	cronDel
-	adExit 2
-}
+					<div class="section-title">Adblock (DNS filtering) - Settings</div>
+					<div class="section">
+						<script>
+							createFieldTable('', [
+								{ title: 'Enable', name: 'f_adblock_enable', type: 'checkbox', value: nvram.adblock_enable != '0' },
+								{ title: 'Max Log Level', indent: 2, name: 'f_adblock_logs', type: 'select', options: [[0, 'Only Basic'], [3, '3 Error (default)'], [4, '4 Warning'], [5, '5 Notification'], [6, '6 Info'], [7, '7 Debug + trace mode']], value: nvram.adblock_logs },
+								{ title: 'Blockfile size limit', indent: 2, name: 'f_adblock_limit', type: 'text', placeholder: 'empty = reset', maxlen: 32, size: 15, suffix: '&nbsp;<small>MB<\/small>', value: bytesToMB(nvram.adblock_limit) },
+								{ title: 'Custom path (optional)', indent: 2, name: 'f_adblock_path', type: 'text', placeholder: 'empty = /tmp', maxlen: 64, size: 15, suffix: '<small>/adblock/<\/small>', value: nvram.adblock_path }
+							]);
+						</script>
+					</div>
 
-if [ "$1" == "status" ]; then
-	[ ! -z $sizeLimit ] && max=$(echo $sizeLimit | number ) || max="Calculated at the next run"
-	echo -e "
-  ┌────────────────── FreshTomato ────────────────────┐
-  │                                                   │
-  │                 ${f_light_white}Adblock  ${ver:0:6} ${reset}                  │
-  │                                                   │
-  ├───── Dnsmasq ─────────────────────────────────────┤
+					<!-- / / / -->
 
-          Running = $([ -f "/var/run/dnsmasq.pid" ] && echo "yes" || echo "${f_red}no${reset}")
-            Owner = $([ $(ps | grep '[d]nsmasq.*async$' | awk '{print $2}') == "root" ] && echo "${f_red}root${reset}" || echo "nobody" )
-   Restarts today = $(grep -E $(date +%b)" "+$(date +%d|sed 's/^0*//') /var/log/messages | grep -E '.*dnsmasq\[.*exiting' | wc -l )
-     Restart time = $([ -f $DNS_TIME ] && cat $DNS_TIME || echo "N/A")
-   Mapped adblock = $(grep -q 'conf-file=/etc/dnsmasq.adblock' /etc/dnsmasq.conf && echo "yes" || echo "${f_red}no${reset}")
+					<div class="section-title">Domain blacklist URLs & Group-of-lists</div>
+					<div class="section">
+						<div class="tomato-grid" id="adblock-grid"></div>
+					</div>
 
-  ├────── Adblock ────────────────────────────────────┤
+					<!-- / / / -->
 
-      Calls today = $(grep -E $(date +%b)" "+$(date +%d|sed 's/^0*//') /var/log/messages | grep "Kick off" | wc -l )
-         Activity = $([ -f ${pidfile} ] && { [ -f ${VRFY} ] && echo "${f_light_white}Checking...${reset}" || echo "${f_light_white}Running...${reset}" ;} || echo "Idle" )
-       Last trace = $([ $LOGL -eq 7 ] && last_trace)
-        Hold-time = $([ -s $CHK_FILE -a -s $FINAL ] && { HOLD_LEFT=$(( ${hold} - ($(date +%s) - $(date -r "$FINAL" +%s)) /60 )) ; [ "$HOLD_LEFT" -le ${hold} -a "$HOLD_LEFT" -gt 0 -a $(hashblack | md5file) == $(cat ${CHK_FILE} | grep md5black | grep -Eo ^[a-zA-Z0-9]{32}) ] && echo -e "${f_light_white}On${reset} ~ ${HOLD_LEFT}min left" || echo "off" ;} || echo "off" )
+					<div class="section-title">Domain blacklist custom</div><input type="button"
+						value="Sort domains backward a-z ↓" onclick="sortDomains('domain-blacklist')"
+						id="sort-button-blacklist" style="float:right">
+					<div class="section">
+						<script>
+							createFieldTable('', [
+								{ title: 'Individual domains and/or path to external file/s.<br>Domains defined with a prepending <b>+<\/b> will have any found subdomain pruned from the blockfile.<br>Prepend <b>#<\/b> to comment.', name: 'adblock_blacklist_custom', type: 'textarea', placeholder: 'baddomain.com&#10;/mnt/usb/list-of-bad-domains.list&#10;/mnt/usb/list-of-blacklisted-urls.list&#10;+prune-subdomains.com', value: nvram.adblock_blacklist_custom, id: 'domain-blacklist' }
+							]);
+						</script>
+					</div>
 
-  ├──── Blockfile ────────────────────────────────────┤"
-	if [ -s "$FINAL" ]; then echo -e "
-            State = Loaded
-      Destination = $DPATH
-       References = $(wc -l < $FINAL| number ) Domains
-        File size = $(wc -c < $FINAL| number ) Bytes
-     Maximum size = $(echo $max) Bytes
-        File date = $(ls -lah $FINAL | awk '{print $8" on "$7" "$6}')
-   "
-	elif [ -s "$UNLOADED" ]; then echo -e "
-            State = ${f_grey}Parked${reset}
-      Destination = $DPATH
-       References = $(wc -l < $UNLOADED| number) Domains
-        File size = $(ls -l $UNLOADED | awk '{ print $5}' | number ) Bytes
-     Maximum size = $max Bytes
-        File date = $(ls -lah $UNLOADED | awk '{print $8" on "$7" "$6}')
-   "
-	elif [ -f "$TM" ]; then echo -e "
-            State = ${f_light_white}Loading...${reset}
-      Destination = $DPATH
-       References = $(wc -l < $TM| number) Domains
-        File size = $(ls -l $TM | awk '{ print $5}' | number ) Bytes
-     Maximum size = $max Bytes
-        File date = $(ls -lah $TM | awk '{print $8" on "$7" "$6}')
-   "
-	fi
-	echo "  └───────────────────────────────────────────────────┘
-"
-	exit
-elif [ "$1" == "status-data" ]; then
-	status_data
-	exit
-elif [ "$1" == "reset" ]; then
-	NU adblock_limit
-	setlimit
-	exit
-elif [ "$1" == "clear" -o "$1" == "clean" ]; then
-	EXIT_REASON="Clearing up all the file relevant to Adblock/DNS-filtering from the filesystem."
-	echo "$EXIT_REASON" | tee /dev/tty >/dev/null 2>/dev/null
-	adExit 4
-elif [ "$1" == "test" ]; then
-	[ $# -eq 2 -a $(echo $2 | domain | wc -l) -gt 0 ] && {
-		dom=$(echo $2 | domain)
-		int=$(nslookup $dom 127.0.0.1 2>/dev/null | grep -A999 ^$ | grep Address || echo "${f_grey}Unresolvable")
-		ext=$(nslookup $dom $(NG wan_checker) 2>/dev/null | grep -A999 ^$ | grep Address || echo "${f_grey}Unresolvable")
-		[ "$ext" != "${f_grey}Unresolvable" -a "$int" == "${f_grey}Unresolvable" ] && int=$(echo "${f_red}Blocked")
-		if [ $(grep -E "^server=/(\.)?$dom/" $FINAL | wc -l ) -gt 0 ]; then
-			blo="${f_green}$(grep -E "^server=/(\.)?$dom/" $FINAL)"
-		elif [ $(grep -E "^local=/(\.)?$dom/" $FINAL | wc -l ) -gt 0 ]; then
-			blo="${f_red}$(grep -E "^local=/(\.)?$dom/" $FINAL)"
-		else
-			blo="${f_grey}Not found"
-		fi
-		echo -en "
-─────────────────────────────────── adblock test ──
-── dnsmasq answer ─────────────────────────────────${f_green}
-$int${reset}
-── cloudflare answer ──────────────────────────────${f_light_white}
-$ext${reset}
-── Blockfile ref: $(grep -E "/(\.)?$dom/" $FINAL | wc -l) $FINAL
-$blo${reset}
-───────────────────────────────────────────────────
-"
-		echo -e "───────────────────────────────── test completed ──
-"
-	} || echo -e "Please provide an indivudual domain to be tested e.g.: ${f_light_white}adblock test example.com${reset}"; exit
-elif [ "$1" == "help" ]; then
-	echo -e "
-  ┌────────────────── FreshTomato ────────────────────┐
-  │                                                   │
-  │                 ${f_light_white}Adblock  ${ver:0:6} ${reset}                  │
-  │                                                   │
-  ├───────────────────────────────────────────────────┤
-  │                                                   │
-  │       - Supported command line options -          │
-  │                                                   │
-  │      ${f_light_white}help${reset}  This screen                            │
-  │    ${f_light_white}status${reset}  General running info                   │
-  │                                                   │
-  │     ${f_light_white}start${reset}  Same as no parameter: will load        │
-  │      ${f_light_white}stop${reset}  Will unload the script                 │
-  │    ${f_light_white}update${reset}  Update lists while script is running   │
-  │                                                   │
-  │      ${f_light_white}test  example.com${reset} Verify domain resolution   │
-  │                                                   │  
-  │     ${f_light_white}reset${reset}  Resets the maximum filesize            │
-  │     ${f_light_white}clear${reset}  Remove any relevant file found         │
-  │     ${f_light_white}trace${reset}  Displays the very last trace file      │
-  │  ${f_light_white}snapshot${reset}  Stores info into /tmp/debug.adblock    │
-  │                                                   │
-  │    ${f_light_white}enable${reset}  Enable adblock                         │
-  │   ${f_light_white}disable${reset}  Disable adblock                        │
-  │                                                   │
-  └───────────────────────────────────────────────────┘
-  "
-	exit
-elif [ "$1" == "trace" ]; then
-	trace=$(last_trace)
-	[ -n "$trace" ] && {
-		echo $trace
-		read -n1 -p "press c for cat | l for less | m for more | n for nano | v for vi | any other key to quit"$'\n' -s ans
-		if [[ -z $ans ]]; then
-			exit
-		elif [[ $ans == "c" ]]; then
-			cat < $trace
-		elif [[ $ans == "l" ]]; then
-			less < $trace
-		elif [[ $ans == "m" ]]; then
-			more < $trace
-		elif [[ $ans == "n" ]]; then
-			nano $trace
-		elif [[ $ans == "v" ]]; then
-			vi $trace
-		else
-			exit
-		fi
-	}
-	exit
-elif [ "$1" == "stop" ]; then
-	cronDel
-	EXIT_REASON="Stopping Adblock/DNS-filtering..."
-	echo "$EXIT_REASON" | tee /dev/tty >/dev/null 2>/dev/null
-	adExit 1
-elif [ "$1" == "enable" ]; then
-	logo "️ Enabled Adblock/DNS-filtering..."
-	NS adblock_enable=1 ; NC
-	echo -e "Adblock has been enabled (adblock set adblock_enable=1)"
-	exit
-elif [ "$1" == "disable" ]; then
-	logo "Disabled Adblock/DNS-filtering..."
-	NS adblock_enable=0 ; NC
-	echo -e "Adblock has been disabled (adblock set adblock_enable=0)"
-	exit
-elif [ "$1" == "snapshot" ]; then
-	now=$(date +%s)
-	snapshot="$SNAPSHOT_PREFIX.$now"
-	echo -e "" > $snapshot
-	(
-	echo -e "\n--- ls -l $PREFIX/ "
-	ls -l $PREFIX/
-	echo -e "\n--- ls -lp /etc/dnsmasq*"
-	ls -lp /etc/dnsmasq*
-	echo -e "\n--- ls -lp $OPS/"
-	ls -lp $OPS/
-	echo -e "\n--- cat $CHK_FILE"
-	cat $CHK_FILE
-	echo -e "\n--- Current config/lists"
-	echo -e $(hashblack)
-	echo -e $(hashwhite)
-	echo -e "\n--- ls -lp $OPS/*dnsmasq*"
-	ls -lp $OPS/*dnsmasq*
-	[ $PATH != '/etc' ] && echo -e "\n--- ls -l $DPATH/*"; ls -l $DPATH/*
-	echo -e "\n--- ls -l /var/run/ | grep -E '*adblock.pid$|*dnsmasq.pid$'"
-	ls -l /var/run/ | grep -E '.*adblock.pid$|.*dnsmasq.pid$'
-	) >> $snapshot 2>/dev/null
+					<!-- / / / -->
 
-	echo -e "Debug output saved to file. Use cat $snapshot to view"
-	logo "Snapshot taken and saved in $snapshot"
-	exit
-elif [ "$1" == "update" -o "$1" == "start" -o "$1" == "delay" -o $# -eq 0 ]; then
-	if [ "$ENABLE" -eq "1" ]; then {
-		[ ! -f $pidfile ] && echo $PID > $pidfile
-		[ "$1" == "delay" ] && DELAY=1
-		[ $(NG adblock_blacklist | tr ">" "\n" | grep ^1 | wc -l) -gt 0 ] && {
-		[[ $(NP mwan_ckdst) -eq 1 && $(NG mwan_ckdst | tr ',' '\n' | domain | wc -l) -gt 0 ]] && { itarget=$(NG mwan_ckdst | tr ',' '\n' | domain | head -1); } || { itarget="google.com"; }
-		while ! ( traceroute -n -m10 -w1 -q1 -z1 "$itarget" >/dev/null 2>&1 && [ $(date +%Y) -gt 2023 ] ); do { 
-				[ $itest -eq 0 ] && echo "Waiting for Internet connectivity..." | tee /dev/tty | logn
-				itest=$((itest+1))
-				sleep 10
-				pre=$(date +%s); 
-			} done
-			[ $itest -gt 0 ] && echo "...restored Internet connectivity" | tee /dev/tty | logn
-			}
-		[ -s "$FINAL" ] && {
-			pending=$( [ -s ${ADHEAD} ] && { cat ${ADHEAD} | grep -Ev ' 0$' | wc -l; } || echo 1 )
-			HOLD_LEFT=$(( $hold - ($(date +%s) - $(date -r "$FINAL" +%s)) /60))
-			[ "$HOLD_LEFT" -lt $hold -a "$HOLD_LEFT" -gt 0 -a $(hashblack | md5file) == $([ -s "$CHK_FILE" ] && { grep 'md5black' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) -a $(hashwhite | md5file) == $([ -s "$CHK_FILE" ] && { grep 'md5white' "${CHK_FILE}" | grep -Eo ^[a-zA-Z0-9]{32} ;} || echo 0) -a $pending -eq 0 ] && {
-				EXIT_REASON="The last update was performed less then ${hold}min ago (${HOLD_LEFT}min left) and no modification to the config have been detected since. Skipping script execution for now..."
-				echo "$EXIT_REASON" | tee /dev/tty >/dev/null 2>/dev/null
-				adExit 5
-			}
-		}
-		# Tweak kernel parameter for memory allocation
-		[ $(cat /proc/sys/vm/overcommit_ratio) -le 90 ] && echo 90 > /proc/sys/vm/overcommit_ratio
-		setlimit
-		days=$(( 60 * 60 * 24 * 15 )) #15 days
-		[ $DPATH != '/etc' ] && {
-			el=$(echo "$BLACKLIST" | grep -Ev '^$' | tr " " "_" | tr ">" "\n" | grep ^1 | cut -d "<" -f2 | sed -e 's/_$//' -e 's/^[ \t]*//' | while read line; do echo $line | md5sum | awk '{print $1}' ;done)
-			ls -1 $DPATH | grep -v "adblock\|$el" | while read line; do
-			[ $(($(date +%s) - $days)) -gt $(date -r $DPATH/$line +%s) ] && {
-				rm -fr $DPATH/$line &>/dev/null
-				logi "Removing unused (and 15+ days old) file $DPATH/$line"
-			}
-			done
-		}
-		[ "$1" == "update" ] && {
-			logn "Updating lists"
-			rm -f ${UNLOADED}
-			download
-		} || {
-			[ -s $UNLOADED ] && { mv $UNLOADED $FINAL ; logn "Using saved version of the blockfile for quick start-up" ; } || download
-		}
-		cronAdd
-	}
-	elif [ "$ENABLE" -eq "0" ]; then
-		EXIT_REASON="Adblock/DNS-filtering is disabled! Exiting..."
-		echo "$EXIT_REASON" | tee /dev/tty >/dev/null 2>/dev/null
-		adExit 3
-	fi
-else
-	echo -e " ${f_light_white}$1${reset} = parameter not understood. Typo?"
-	exit
-fi
-adExit 0
+					<div class="section-title">Domain whitelist</div>
+					<input type="button" value="Sort domains backward a-z ↓" onclick="sortDomains('domain-whitelist')"
+						id="sort-button-whitelist" style="float: right;">
+					<div class="section">
+						<script>
+							createFieldTable('', [
+								{ title: 'Individual domains and/or path to external file/s.<br>Domains defined with a prepending <b>%<\/b> will not have the own subdomains blocked.<br>Prepend <b>#<\/b> to comment.', name: 'adblock_whitelist', type: 'textarea', placeholder: 'gooddomain.com\&#10;/mnt/usb/list-of-good-domains.list&#10;/mnt/usb/file-cointaining-list-of-urls.list&#10;%onlythis-nosubdomains.com', value: nvram.adblock_whitelist, id: 'domain-whitelist' }
+							]);
+						</script>
+					</div>
+
+					<!-- / / / -->
+
+					<div class="section-title">Adblock Controls / Status</div>
+					<div class="section">
+						<div class="fields">
+							<table class="adblock-status-table">
+								<tr valign="top">
+									<td valign="top">
+										<input type="button" value="▶️ Load" id="adblock-start"
+											onclick="adblockMe('start');">
+									</td>
+									<td class="adblock-label" valign="top" colspan="2">
+										<div id="adblock-status-1" class="status-result"></div>
+									</td>
+								</tr>
+								<tr valign="top">
+									<td valign="top"><input type="button" value="⏏️ Unload" id="adblock-stop"
+											onclick="adblockMe('stop');"></td>
+									<td class="adblock-label" valign="top">Version</td>
+									<td class="adblock-td2" valign="top">
+										<div id="adblock-status-2" class="status-result"></div>
+									</td>
+								</tr>
+								<tr valign="top">
+									<td valign="top"><input type="button" value="🔄 Update" id="adblock-update"
+											onclick="adblockMe('update');"></td>
+									<td class="adblock-label" valign="top">Activity</td>
+									<td class="adblock-td2" valign="top">
+										<div id="adblock-status-3" class="status-result"></div>
+									</td>
+								</tr>
+								<tr valign="top">
+									<td valign="top"><input type="button" value="♻️ Reset limit" id="adblock-reset"
+											onclick="adblockMe('reset');"></td>
+									<td class="adblock-label" valign="top">dnsmasq</td>
+									<td class="adblock-td2" valign="top">
+										<div id="adblock-status-4" class="status-result"></div>
+									</td>
+								</tr>
+								<tr valign="top">
+									<td valign="top"><input type="button" value="🧹 Clear all files" id="adblock-clear"
+											onclick="adblockMe('clear');"></td>
+									<td class="adblock-label" valign="top">Adblock</td>
+									<td class="adblock-td2" valign="top">
+										<div id="adblock-status-5" class="status-result"></div>
+									</td>
+								</tr>
+								<tr valign="top">
+									<td valign="top"><input type="button" value="📷 Snapshot" id="adblock-snapshot"
+											onclick="adblockMe('snapshot');"></td>
+									<td class="adblock-label" valign="top">Memory</td>
+									<td class="adblock-td2" valign="top">
+										<div id="adblock-status-6" class="status-result"></div>
+									</td>
+								</tr>
+								<tr valign="top">
+									<td valign="top"><input type="button" value="☑️ Enable only" id="adblock-enable"
+											onclick="adblockMe('enable');"></td>
+									<td class="adblock-label" valign="top">Blockfile</td>
+									<td class="adblock-td2" valign="top">
+										<div id="adblock-status-7" class="status-result"></div>
+									</td>
+								</tr>
+								<tr valign="top">
+									<td valign="top"><input type="button" value="⬜ Disable only" id="adblock-disable"
+											onclick="adblockMe('disable');"></td>
+									<td class="adblock-label" valign="top">Trace</td>
+									<td class="adblock-td2" valign="top">
+										<div id="adblock-status-8" class="status-result"></div>
+									</td>
+								</tr>
+
+
+								<tr>
+									<td colspan="3">
+										<div id="adblock-controls">
+											<script>genStdRefresh(1, 5, 'ref.toggle()')</script>
+										</div>
+									</td>
+								</tr>
+							</table>
+						</div>
+					</div>
+
+					<!-- / / / -->
+
+					<div class="section-title">Notes <small><i><a href="javascript:toggleVisibility(cprefix,'notes');"
+									id="toggleLink-notes"><span id="sesdiv_notes_showhide">(Show)</span></a></i></small>
+					</div>
+					<div class="section" id="sesdiv_notes" style="display:none">
+						<ul>
+							<li><b>Updated information on tested adblock lists can be found at <a
+										href="https://wiki.freshtomato.org/doku.php/adblock_dns_filtering"
+										class="new_window">this
+										page</a></b></li>
+							<li><b>Enable</b> - Used to activate/deactivate the adblock function. When enable is set the
+								script runs
+								after a save, a manual Load/Update, it autostart at boot and set autoupdate to run daily
+								at a random
+								time between 3am and 6am (excluding mins 59,00,01).</li>
+							<li><b>Blockfile size limit</b> - Displayed in MB (stored in Bytes) and acts as an
+								automatically
+								calculated hard limit for the dnsmasq.adblock file. This limit can be overwritten
+								manually. Removing
+								the number and saving will trigger an internal calculation performed at the next run.
+							</li>
+							<li><b>Custom path</b> - Optional, allows to save the potentially large adblock files on
+								permanent
+								storage like USB/CIFS/etc. This indirectly also means lower RAM usage and additional
+								list control to
+								avoid downloads/processing when not necessary.</li>
+							<li><b>Blacklist URL & Group-of-lists</b> - Supported blacklist can come in multiple format.
+								as long as
+								they are text and with maximum one domain reference per line. Empty lines and lines
+								starting with
+								"#" or "!" are always ignored. A particular note on the Group-of-lists format where the
+								content of
+								the defined list contains references to external URLs
+								e.g.<br><code>[https://provider.com/badaddresses.txt] --> containing a list of URLs</code>.
+							</li>
+							<li><b>Blacklist Custom</b> - Optional, newline separated: domain1.com domain2.com
+								domain3.com. It also
+								accepts external files as a source e.g. <code>/mnt/usb/blacklist</code>, with one domain
+								per line.
+								Prepending a '+' to the domain will force a removal of all the child domains from the
+								blocklist file
+								keeping only the custom defined one (blocking all its subdomains).</li>
+							<li><b>Whitelist</b> - Optional, newline separated: domain1.com domain2.com domain3.com. It
+								also accepts
+								external files as a source e.g. <code>/mnt/usb/whitelist</code>, with one domain per
+								line. Please
+								note by default given a domain, any of its subdomains will be whitelisted. To have a
+								domain strictly
+								whitelisted (subdomains blocked) prepend a <B>%</B> to the domain.</li>
+							<li><b>Files</b> - Do not defined your custom files within the adblock folder as this is
+								periodically
+								cleaned up
+							<li><b>Caution</b> - Configuring large blocklists in adblock is not ideal. Add one list at
+								the time and
+								monitor the RAM usage. There are multiple protections in place but the most important is
+								to trim
+								down your final blocklist if too many resources are needed, this is reflected in the
+								<code>Blockfile size limit</code> field
+							</li>
+							<li><b>Hold-time</b> - There's a 30 min hold-time between consecutive updates to avoid false
+								positive
+								calls. This can be manually overridden performing an unload + update</li>
+						</ul>
+					</div>
+
+					<!-- / / / -->
+
+					<div id="footer">
+						<span id="footer-msg"></span>
+						<input type="button" value="Save" id="save-button" onclick="save()">
+						<input type="button" value="Cancel" id="cancel-button" onclick="reloadPage()">
+					</div>
+				</td>
+			</tr>
+		</table>
+	</form>
+	<script>earlyInit();</script>
+</body>
+
+</html>
