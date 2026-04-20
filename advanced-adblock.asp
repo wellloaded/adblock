@@ -484,7 +484,7 @@
 					+ statusRow('Version', s.version || 'N/A', '')
 					+ (function () {
 						var act = s.activity || 'Idle';
-						var mode = (act == 'Idle') ? 'ok' : ((/loading/i.test(act)) ? 'bad' : 'warn');
+						var mode = (act == 'Idle') ? 'ok' : ((/loading/i.test(act)) ? 'warn' : 'warn');
 						var info = s.activity_info ? '<span class="adblock-note-inline">' + escapeHTML(s.activity_info) + '<\/span>' : '';
 						// show spinner only for Loading or Checking (case-insensitive)
 						var showSpinner = /loading|checking/i.test(act);
@@ -493,7 +493,7 @@
 					})()
 					+ (function () {
 						var owner = s.owner || 'unknown';
-						var mode = (owner == 'root') ? 'warn' : 'ok';
+						var mode = (owner == 'root') ? 'bad' : 'ok';
 						var ownerDisplay = statusBadge(owner, mode);
 						var restarts = escapeHTML(String((s.restarts || '0')));
 						return '<tr><th>dnsmasq<\/th><td>' + ownerDisplay + ' - <span class="adblock-note-inline">Restarts today: ' + restarts + '<\/span><\/td><\/tr>';
