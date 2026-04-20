@@ -354,6 +354,7 @@
 				catch (ex) {
 				}
 				adblockStatus();
+				updateListSizes();
 			}
 
 			adblockg.resetNewEditor = function () {
