@@ -156,6 +156,11 @@
 				display: inline-block;
 			}
 
+			.adblock-spinner-cell {
+				margin: 0 auto;
+				display: block;
+			}
+
 			/* align the middle label column to the right */
 			.adblock-status-table .adblock-label {
 				text-align: right;
@@ -172,8 +177,21 @@
 			.adblock-status-head {
 				text-align: left;
 			}
+
+			#adblock-grid table {
+				table-layout: auto;
+			}
+
+			#adblock-grid .co3,
+			#adblock-grid input.fi3 {
+				width: 4ch;
+				max-width: 4ch;
+				white-space: nowrap;
+				text-align: center;
+			}
 		</style>
 		<script src="tomato.js?rel=<% version(); %>"></script>
+		<script src="md5.js?rel=<% version(); %>"></script>
 		<script>
 
 			//	<% nvram("adblock_enable,adblock_blacklist,adblock_blacklist_custom,adblock_whitelist,adblock_path,adblock_limit,adblock_logs"); %>
@@ -182,7 +200,10 @@
 			var adblockg = new TomatoGrid();
 			var adblock_refresh = cookie.get(cprefix + '_refresh');
 			var cmdresult = '';
-			var cmd1 = cmd2 = null;
+			var cmdAction = null;
+			var cmdList = null;
+			var cmdStatus = null;
+			var listSizes = {};
 
 			adblockg.exist = function (f, v) {
 				var data = this.getAllData();
@@ -194,13 +215,18 @@
 			}
 
 			adblockg.dataToView = function (data) {
-				return [(data[0] != '0') ? '&#x2b50' : '', data[1], data[2]];
+				return [
+					(data[0] != '0') ? '&#x2b50' : '',
+					escapeHTML(data[1] || ''),
+					listSizeToView(data[2]),
+					escapeHTML(data[3] || '')
+				];
 			}
 
 			adblockg.fieldValuesToData = function (row) {
 				var f = fields.getAll(row);
 
-				return [f[0].checked ? 1 : 0, f[1].value, f[2].value];
+				return [f[0].checked ? 1 : 0, f[1].value, f[2].value, f[3].value];
 			}
 
 			adblockg.verifyFields = function (row, quiet) {
@@ -210,9 +236,44 @@
 			}
 
 			function bytesToMB(b) {
-				const v = parseInt(b, 10);
-				// Use decimal MB (1 MB = 1,000,000 bytes)
-				return v > 0 ? (Math.round(v / 1000000 * 100) / 100) + '' : ''
+				var v = parseInt(b, 10);
+				return v > 0 ? (v / 1000000).toFixed(1) : '';
+			}
+
+			function listSizeToView(value) {
+				var text = String((value == null) ? '' : value);
+
+				if (text === '')
+					return '<img src="spin.svg" class="adblock-spinner adblock-spinner-cell" alt="">';
+
+				return escapeHTML(text);
+			}
+
+			function setListSizeCell(row, value) {
+				if (!row || !row._data || !row.cells || (row.cells.length < 3)) return;
+
+				row._data[2] = value;
+				row.cells[2].innerHTML = listSizeToView(value);
+			}
+
+			function listUrlToHash(url) {
+				var normalized = String(url || '').replace(/^[ \t]+/, '').replace(/_$/, '');
+				return hex_md5(normalized + '\n').toLowerCase();
+			}
+
+			function refreshListSizeCells() {
+				var start = adblockg.header ? adblockg.header.rowIndex + 1 : 0;
+				var end = adblockg.footer ? adblockg.footer.rowIndex : adblockg.tb.rows.length;
+
+				for (var i = start; i < end; ++i) {
+					var row = adblockg.tb.rows[i];
+					if (!row || !row._data) continue;
+
+					var md5 = listUrlToHash(row._data[1]);
+					var value = listSizes.hasOwnProperty(md5) ? bytesToMB(listSizes[md5]) : '-';
+
+					setListSizeCell(row, value);
+				}
 			}
 
 			function mbToBytes(m) {
@@ -303,19 +364,21 @@
 				f[0].checked = 1;
 				f[1].value = '';
 				f[2].value = '';
+				f[3].value = '';
 			}
 
 			adblockg.setup = function () {
 				this.init('adblock-grid', '', 50, [
 					{ type: 'checkbox', prefix: '<div class="centered">', suffix: '<\/div>' },
 					{ type: 'text', maxlen: 130 },
+					{ type: 'text', maxlen: 4, attrib: 'readonly="readonly" tabindex="-1" style="width:4ch;max-width:4ch;text-align:center" onfocus="this.blur()" onclick="this.blur(); return false;"' },
 					{ type: 'text', maxlen: 40 }
 				]);
-				this.headerSet(['On', 'Blacklist URL', 'Description']);
+				this.headerSet(['On', 'Blacklist URL', 'MB', 'Description']);
 				var s = nvram.adblock_blacklist.split('>');
 				for (var i = 0; i < s.length; ++i) {
 					var t = s[i].split('<');
-					if (t.length == 3) this.insertData(-1, t);
+					if (t.length == 3) this.insertData(-1, [t[0], t[1], '', t[2]]);
 				}
 				this.showNewEditor();
 				this.resetNewEditor();
@@ -325,7 +388,7 @@
 				var data = adblockg.getAllData();
 				var blacklist = '';
 				for (var i = 0; i < data.length; ++i) {
-					blacklist += data[i].join('<') + '>';
+					blacklist += [data[i][0], data[i][1], data[i][3]].join('<') + '>';
 				}
 
 				var fom = E('t_fom');
@@ -345,6 +408,7 @@
 
 				adblockg.recolor();
 				adblockStatus();
+				updateListSizes();
 				ref.initPage();
 				eventHandler();
 			}
@@ -353,14 +417,14 @@
 				if (str == 'snapshot')
 					alert('Result saved in /tmp/adblock.snapshot.$now');
 
-				if (cmd1)
+				if (cmdAction)
 					return;
 
-				cmd1 = new XmlHttp();
+				cmdAction = new XmlHttp();
 
 				var c = '/usr/sbin/adblock ' + str;
-				cmd1.post('shell.cgi', 'action=execute&command=' + escapeCGI(c.replace(/\r/g, '')));
-				cmd1 = null;
+				cmdAction.post('shell.cgi', 'action=execute&command=' + escapeCGI(c.replace(/\r/g, '')));
+				cmdAction = null;
 				setTimeout(function () { adblockStatus(); }, 500);
 			}
 
@@ -556,20 +620,47 @@
 			}
 
 			function adblockStatus() {
-				if (cmd2)
+				if (cmdStatus)
 					return;
 
-				cmd2 = new XmlHttp();
-				cmd2.onCompleted = function (text, xml) {
+				cmdStatus = new XmlHttp();
+				cmdStatus.onCompleted = function (text, xml) {
 					eval(text);
 					displayStatus();
-					cmd2 = null;
+					cmdStatus = null;
 				}
-				cmd2.onError = function (x) {
-					cmd2 = null;
+				cmdStatus.onError = function (x) {
+					cmdStatus = null;
 				}
 				var c = '/usr/sbin/adblock status-data';
-				cmd2.post('shell.cgi', 'action=execute&command=' + escapeCGI(c.replace(/\r/g, '')));
+				cmdStatus.post('shell.cgi', 'action=execute&command=' + escapeCGI(c.replace(/\r/g, '')));
+			}
+
+			function updateListSizes() {
+				if (cmdList) return;
+				cmdList = new XmlHttp();
+				cmdList.onCompleted = function (text, xml) {
+					var lines = String(text || '').replace(/\r/g, '').split('\n');
+					listSizes = {};
+					for (var i = 0; i < lines.length; ++i) {
+						var line = lines[i].trim();
+						if (line === '') continue;
+
+						var parts = line.split(':');
+						if (parts.length == 2) {
+							listSizes[parts[0].toLowerCase()] = parts[1];
+						}
+					}
+					refreshListSizeCells();
+					cmdList = null;
+				}
+				cmdList.onError = function (x) {
+					listSizes = {};
+					refreshListSizeCells();
+					cmdList = null;
+				}
+				var c = '/usr/sbin/adblock list-size';
+				cmdList.post('shell.cgi', 'action=execute&nojs=1&command=' + escapeCGI(c.replace(/\r/g, '')));
 			}
 
 			function earlyInit() {
