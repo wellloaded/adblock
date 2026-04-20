@@ -2,7 +2,7 @@
 <!--
 	Tomato GUI
 	Copyright (C) 2007-2025 FreshTomato
-	ver="v2.74c - 04/26" # rs232
+	ver="v2.74d - 04/26" # rs232
 	https://www.freshtomato.org/
 	For use with Tomato Firmware only.
 	No part of this file may be used without permission.
