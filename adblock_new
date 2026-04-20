@@ -760,7 +760,7 @@ status_data() {
 		fi
 	fi
 	echo "ver=$ver"
-	echo "version=${ver:0:6}"
+	echo "version=$ver"
 	echo "enabled=$([ $ENABLE -eq 1 ] && echo Enabled || echo Disabled)"
 	echo "dnsmasq=$([ -f "/var/run/dnsmasq.pid" ] && echo Online || echo Offline)"
 	echo "owner=$owner"
