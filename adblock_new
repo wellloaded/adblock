@@ -3,7 +3,7 @@
 
 . nvram_ops
 
-ver="v2.74c - 04/26" # rs232
+ver="v2.74d - 04/26" # rs232
 PID=$$
 pidfile="/var/run/adblock.pid"
 export PATH=/bin:/usr/bin:/sbin:/usr/sbin:/home/root
@@ -988,6 +988,58 @@ elif [ "$1" == "snapshot" ]; then
 
 	echo -e "Debug output saved to file. Use cat $snapshot to view"
 	logo "Snapshot taken and saved in $snapshot"
+	exit
+elif [ "$1" == "list-size" ]; then
+	# Output format: md5:size (one per line) for all stored lists, or size for specific target
+	if [ -z "$2" ]; then
+		# List all stored lists
+		for f in "$D"/*.list "$PREFIX"/*.list; do
+			[ -f "$f" ] || continue
+			mn=$(basename "$f" .list)
+			sz=$(wc -c < "$f")
+			echo "$mn:$sz"
+		done
+		exit
+	fi
+	# Specific target
+	target="$2"
+	# If it's an existing local file, return its byte size
+	if [ -f "$target" ]; then
+		wc -c < "$target"
+		exit
+	fi
+	# Accept either an md5 name or a URL (convert URL -> md5name)
+	if echo "$target" | grep -Eq '^[a-f0-9]{32}$'; then
+		mn="$target"
+	else
+		mn=$(echo "$target" | md5sum | awk '{print $1}')
+	fi
+	# Check for already-downloaded list files
+	if [ -f "$D/${mn}.list" ]; then
+		wc -c < "$D/${mn}.list"
+		exit
+	fi
+	if [ -f "$PREFIX/${mn}.list" ]; then
+		wc -c < "$PREFIX/${mn}.list"
+		exit
+	fi
+	# Check stored headers for Content-Length
+	for h in "$D/${mn}.header" "$PREFIX/${mn}.header"; do
+		if [ -s "$h" ]; then
+			cl=$(grep -i 'Content-Length' "$h" | tail -1 | awk '{print $2}' | tr -d '\r')
+			[ -n "$cl" ] && { echo "$cl"; exit; }
+		fi
+	done
+	# As a last resort do a minimal HEAD (spider) request to fetch headers
+	if [ -n "$target" ] && command -v wget >/dev/null 2>&1; then
+		tmp="$OPS/adblock.listsize.$PID"
+		yget "$target" -O /dev/null -S --spider 2> "$tmp"
+		cl=$(grep -i 'Content-Length' "$tmp" | tail -1 | awk '{print $2}' | tr -d '\r')
+		[ -n "$cl" ] && { echo "$cl"; rm -f "$tmp"; exit; }
+		rm -f "$tmp"
+	fi
+	# Unknown size
+	echo 0
 	exit
 elif [ "$1" == "update" -o "$1" == "start" -o "$1" == "delay" -o $# -eq 0 ]; then
 	if [ "$ENABLE" -eq "1" ]; then {
