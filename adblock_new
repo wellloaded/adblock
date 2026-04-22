@@ -3,7 +3,7 @@
 
 . nvram_ops
 
-ver="v2.74e - 04/26" # rs232
+ver="v2.74c - 04/26" # rs232
 PID=$$
 pidfile="/var/run/adblock.pid"
 export PATH=/bin:/usr/bin:/sbin:/usr/sbin:/home/root
@@ -1027,10 +1027,12 @@ elif [ "$1" == "list-size" ]; then
 			lines=0
 			file=""
 			header=""
+			mtime=""
 
 			if [ -n "$listfile" ]; then
 				lines=$(wc -l < "$listfile")
 				file="$listfile"
+				mtime=$(date -r "$listfile" '+%Y-%m-%d %H:%M' 2>/dev/null)
 			elif [ -n "$headerfile" ]; then
 				file="${headerfile%.header}.list"
 			fi
@@ -1039,7 +1041,7 @@ elif [ "$1" == "list-size" ]; then
 				header=$(awk 'BEGIN{ORS=""} {gsub(/%/, "%25"); gsub(/\t/, "%09"); gsub(/\r/, "%0D"); printf "%s%%0A", $0}' "$headerfile" 2>/dev/null)
 			fi
 
-			echo "$mn	$sz	$lines	$file	$header"
+			echo "$mn	$sz	$lines	$file	$header	$mtime"
 		done
 		exit
 	fi
