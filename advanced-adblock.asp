@@ -2,7 +2,7 @@
 <!--
 	Tomato GUI
 	Copyright (C) 2007-2025 FreshTomato
-	ver="v2.74d - 04/26" # rs232
+	ver="v2.74e - 04/26" # rs232
 	https://www.freshtomato.org/
 	For use with Tomato Firmware only.
 	No part of this file may be used without permission.
@@ -183,11 +183,85 @@
 			}
 
 			#adblock-grid .co3,
-			#adblock-grid input.fi3 {
+			#adblock-grid .fi3 {
 				width: 4ch;
 				max-width: 4ch;
 				white-space: nowrap;
 				text-align: center;
+			}
+
+			.adblock-list-size {
+				position: relative;
+				display: inline-block;
+				cursor: default;
+				text-decoration: underline dotted;
+			}
+
+			.adblock-list-size:hover .adblock-list-tip {
+				display: block;
+			}
+
+			.adblock-list-tip {
+				display: none;
+				position: absolute;
+				right: calc(100% + 10px);
+				top: 50%;
+				transform: translateY(-50%);
+				z-index: 1000;
+				max-width: 960px;
+				min-width: 560px;
+				padding: 8px 10px;
+				border: 1px solid #8899aa;
+				border-radius: 4px;
+				background: #fff;
+				box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+				font-size: 11px;
+				line-height: 1.4;
+				text-align: left;
+				white-space: normal;
+				pointer-events: none;
+			}
+
+			.adblock-list-tip pre {
+				max-height: none;
+				margin: 6px 0 0;
+				overflow: visible;
+				white-space: pre-wrap;
+				word-break: break-word;
+			}
+
+			#adblock-delete-dialog {
+				display: none;
+				position: fixed;
+				z-index: 1100;
+				left: 50%;
+				top: 50%;
+				transform: translate(-50%, -50%);
+				min-width: 360px;
+				max-width: 520px;
+				padding: 16px;
+				border: 1px solid #8899aa;
+				border-radius: 6px;
+				background: #fff;
+				box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
+			}
+
+			#adblock-delete-dialog p {
+				margin: 0 0 12px;
+			}
+
+			#adblock-delete-buttons {
+				display: flex;
+				gap: 8px;
+				justify-content: flex-end;
+			}
+
+			#adblock-delete-mask {
+				display: none;
+				position: fixed;
+				inset: 0;
+				z-index: 1099;
+				background: rgba(0, 0, 0, 0.2);
 			}
 		</style>
 		<script src="tomato.js?rel=<% version(); %>"></script>
@@ -203,7 +277,11 @@
 			var cmdAction = null;
 			var cmdList = null;
 			var cmdStatus = null;
+			var cmdDelete = null;
 			var listSizes = {};
+			var listMeta = {};
+			var deleteRow = null;
+			var deleteDone = null;
 
 			adblockg.exist = function (f, v) {
 				var data = this.getAllData();
@@ -218,15 +296,16 @@
 				return [
 					(data[0] != '0') ? '&#x2b50' : '',
 					escapeHTML(data[1] || ''),
-					listSizeToView(data[2]),
+					listSizeToView(data[2], listUrlToHash(data[1])),
 					escapeHTML(data[3] || '')
 				];
 			}
 
 			adblockg.fieldValuesToData = function (row) {
 				var f = fields.getAll(row);
+				var listSize = row.cells[2] ? row.cells[2].textContent : '';
 
-				return [f[0].checked ? 1 : 0, f[1].value, f[2].value, f[3].value];
+				return [f[0].checked ? 1 : 0, f[1].value, listSize, f[2].value];
 			}
 
 			adblockg.verifyFields = function (row, quiet) {
@@ -240,20 +319,32 @@
 				return v > 0 ? (v / 1000000).toFixed(1) : '';
 			}
 
-			function listSizeToView(value) {
-				var text = String((value == null) ? '' : value);
+			function listSizeToView(value, md5) {
+				var text = String((value == null) ? '' : value), meta, tip;
 
 				if (text === '')
 					return '<img src="spin.svg" class="adblock-spinner adblock-spinner-cell" alt="">';
 
-				return escapeHTML(text);
+				meta = md5 ? listMeta[md5] : null;
+				if (!meta || ((!meta.file) && (!meta.header)))
+					return escapeHTML(text);
+
+				tip = '<span class="adblock-list-tip"><div><b>File</b>: ' + escapeHTML(meta.file || (md5 + '.list')) + '<\/div>'
+					+ '<div><b>Size</b>: ' + formatCount(meta.bytes || '0') + ' B<\/div>'
+					+ '<div><b>Lines</b>: ' + formatCount(meta.lines || '0') + '<\/div>'
+					+ (meta.header ? '<div><b>.header</b><\/div><pre>' + escapeHTML(meta.header) + '<\/pre>' : '')
+					+ '<\/span>';
+
+				return '<span class="adblock-list-size">' + escapeHTML(text) + tip + '<\/span>';
 			}
 
-			function setListSizeCell(row, value) {
+			function setListSizeCell(row, value, md5) {
 				if (!row || !row._data || !row.cells || (row.cells.length < 3)) return;
 
 				row._data[2] = value;
-				row.cells[2].innerHTML = listSizeToView(value);
+				row.title = '';
+				row.cells[2].title = '';
+				row.cells[2].innerHTML = listSizeToView(value, md5);
 			}
 
 			function listUrlToHash(url) {
@@ -271,9 +362,116 @@
 
 					var md5 = listUrlToHash(row._data[1]);
 					var value = listSizes.hasOwnProperty(md5) ? bytesToMB(listSizes[md5]) : '-';
+					if (value === '') value = '-';
 
-					setListSizeCell(row, value);
+					setListSizeCell(row, value, md5);
 				}
+			}
+
+			function decodeListInfoField(value) {
+				try {
+					return decodeURIComponent(String(value || ''));
+				}
+				catch (ex) {
+					return String(value || '');
+				}
+			}
+
+			function formatCount(value) {
+				var text = String(value == null ? '' : value).replace(/[^0-9-]/g, '');
+				if (text === '' || isNaN(text)) return '0';
+				return String(parseInt(text, 10)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+			}
+
+			function adblockDeleteRow(row, done) {
+				var md5, meta, dialog, content, rect;
+
+				if (!row || !row._data) return;
+				md5 = listUrlToHash(row._data[1]);
+				meta = listMeta[md5] || {};
+
+				if ((!meta.file) && (!meta.header)) {
+					done();
+					return;
+				}
+
+				deleteRow = row;
+				deleteDone = done;
+				dialog = E('adblock-delete-dialog');
+				content = E('content');
+				if (dialog && content) {
+					rect = content.getBoundingClientRect();
+					dialog.style.left = (rect.left + (rect.width / 2)) + 'px';
+					dialog.style.top = (window.innerHeight / 2) + 'px';
+				}
+				E('adblock-delete-mask').style.display = 'block';
+				dialog.style.display = 'block';
+			}
+
+			function adblockDeleteChoice(mode) {
+				var md5, c;
+
+				if (!deleteRow || !deleteDone) return;
+				E('adblock-delete-dialog').style.display = 'none';
+				E('adblock-delete-mask').style.display = 'none';
+
+				if (mode == 4) {
+					deleteRow = null;
+					deleteDone = null;
+					return;
+				}
+
+				if (mode == 2) {
+					deleteDone();
+					deleteRow = null;
+					deleteDone = null;
+					return;
+				}
+
+				md5 = listUrlToHash(deleteRow._data[1]);
+
+				if (cmdDelete) return;
+				cmdDelete = new XmlHttp();
+				cmdDelete.onCompleted = function (text, xml) {
+					cmdDelete = null;
+					updateListSizes();
+					if (mode == 1) deleteDone();
+					deleteRow = null;
+					deleteDone = null;
+				}
+				cmdDelete.onError = function (x) {
+					cmdDelete = null;
+					if (mode == 1) deleteDone();
+					deleteRow = null;
+					deleteDone = null;
+				}
+
+				c = '/usr/sbin/adblock list-size delete ' + md5;
+				cmdDelete.post('shell.cgi', 'action=execute&nojs=1&command=' + escapeCGI(c.replace(/\r/g, '')));
+			}
+
+			adblockg.rpDel = function (e) {
+				var row = PR(e);
+				var me = TGO(row);
+
+				me.moving = null;
+				adblockDeleteRow(row, function () {
+					row.parentNode.removeChild(row);
+					me.recolor();
+					me.rpHide();
+				});
+			}
+
+			adblockg.onDelete = function () {
+				var me = this;
+
+				adblockDeleteRow(this.source, function () {
+					me.removeEditor();
+					elem.remove(me.source);
+					me.source = null;
+					me.disableNewEditor(false);
+					me.clearTextarea();
+				});
 			}
 
 			function mbToBytes(m) {
@@ -364,15 +562,15 @@
 				ferror.clearAll(f);
 				f[0].checked = 1;
 				f[1].value = '';
+				if (this.newEditor && this.newEditor.cells[2]) this.newEditor.cells[2].innerHTML = '';
 				f[2].value = '';
-				f[3].value = '';
 			}
 
 			adblockg.setup = function () {
 				this.init('adblock-grid', '', 50, [
 					{ type: 'checkbox', prefix: '<div class="centered">', suffix: '<\/div>' },
 					{ type: 'text', maxlen: 130 },
-					{ type: 'text', maxlen: 4, attrib: 'readonly="readonly" tabindex="-1" style="width:4ch;max-width:4ch;text-align:center" onfocus="this.blur()" onclick="this.blur(); return false;"' },
+					{ type: 'display', value: '', attrib: 'style="display:block;margin:0 auto"' },
 					{ type: 'text', maxlen: 40 }
 				]);
 				this.headerSet(['On', 'Blacklist URL', 'MB', 'Description']);
@@ -643,13 +841,21 @@
 				cmdList.onCompleted = function (text, xml) {
 					var lines = String(text || '').replace(/\r/g, '').split('\n');
 					listSizes = {};
+					listMeta = {};
 					for (var i = 0; i < lines.length; ++i) {
 						var line = lines[i].trim();
 						if (line === '') continue;
 
-						var parts = line.split(':');
-						if (parts.length == 2) {
-							listSizes[parts[0].toLowerCase()] = parts[1];
+						var parts = line.split('\t');
+						if (parts.length >= 2) {
+							var md5 = parts[0].toLowerCase();
+							listSizes[md5] = parts[1];
+							listMeta[md5] = {
+								bytes: parts[1],
+								lines: parts[2] || '0',
+								file: decodeListInfoField(parts[3] || ''),
+								header: decodeListInfoField(parts[4] || '')
+							};
 						}
 					}
 					refreshListSizeCells();
@@ -657,6 +863,7 @@
 				}
 				cmdList.onError = function (x) {
 					listSizes = {};
+					listMeta = {};
 					refreshListSizeCells();
 					cmdList = null;
 				}
@@ -740,6 +947,16 @@
 
 <body onload="init()">
 	<form id="t_fom" method="post" action="tomato.cgi">
+		<div id="adblock-delete-mask"></div>
+		<div id="adblock-delete-dialog">
+			<p>Delete?</p>
+			<div id="adblock-delete-buttons">
+				<input type="button" value="Blacklist &amp; File" onclick="adblockDeleteChoice(1)">
+				<input type="button" value="Blacklist" onclick="adblockDeleteChoice(2)">
+				<input type="button" value="File" onclick="adblockDeleteChoice(3)">
+				<input type="button" value="Cancel" onclick="adblockDeleteChoice(4)">
+			</div>
+		</div>
 		<table id="container">
 			<tr>
 				<td colspan="2" id="header">
@@ -893,7 +1110,7 @@
 								<tr>
 									<td colspan="3">
 										<div id="adblock-controls">
-											<script>genStdRefresh(1, 5, 'ref.toggle()')</script>
+											<script>genStdRefresh(1, 3, 'ref.toggle()')</script>
 										</div>
 									</td>
 								</tr>
