@@ -3,7 +3,7 @@
 
 . nvram_ops
 
-ver="v2.74d - 04/26" # rs232
+ver="v2.74e - 04/26" # rs232
 PID=$$
 pidfile="/var/run/adblock.pid"
 export PATH=/bin:/usr/bin:/sbin:/usr/sbin:/home/root
@@ -760,7 +760,7 @@ status_data() {
 		fi
 	fi
 	echo "ver=$ver"
-	echo "version=$ver"
+	echo "version=${ver:1:14}"
 	echo "enabled=$([ $ENABLE -eq 1 ] && echo Enabled || echo Disabled)"
 	echo "dnsmasq=$([ -f "/var/run/dnsmasq.pid" ] && echo Online || echo Offline)"
 	echo "owner=$owner"
@@ -990,14 +990,56 @@ elif [ "$1" == "snapshot" ]; then
 	logo "Snapshot taken and saved in $snapshot"
 	exit
 elif [ "$1" == "list-size" ]; then
-	# Output format: md5:size (one per line) for all stored lists, or size for specific target
+	# Output format without args: md5<TAB>size<TAB>lines<TAB>file<TAB>header
+	if [ "$2" = "delete" ] && [ -n "$3" ]; then
+		target="$3"
+		if echo "$target" | grep -Eq '^[a-f0-9]{32}$'; then
+			mn="$target"
+		else
+			mn=$(echo "$target" | md5sum | awk '{print $1}')
+		fi
+		for f in "$D/${mn}.list" "$D/${mn}.header" "$PREFIX/${mn}.list" "$PREFIX/${mn}.header"; do
+			[ -e "$f" ] && : > "$f"
+		done
+		echo ok
+		exit
+	fi
 	if [ -z "$2" ]; then
-		# List all stored lists
-		for f in "$D"/*.list "$PREFIX"/*.list; do
-			[ -f "$f" ] || continue
-			mn=$(basename "$f" .list)
-			sz=$(wc -c < "$f")
-			echo "$mn:$sz"
+		echo "$BLACKLIST" | tr '>' '\n' | while read item; do
+			[ -n "$item" ] || continue
+			enabled=$(echo "$item" | cut -d '<' -f1)
+			url=$(echo "$item" | cut -d '<' -f2 | sed -e 's/_$//' -e 's/^[ 	]*//')
+			[ "$enabled" = "1" ] || continue
+			[ -n "$url" ] || continue
+
+			mn=$(echo "$url" | md5sum | awk '{print $1}')
+			listfile=""
+			headerfile=""
+			for candidate in "$D/${mn}.list" "$PREFIX/${mn}.list"; do
+				[ -f "$candidate" ] && { listfile="$candidate"; break; }
+			done
+			for candidate in "$D/${mn}.header" "$PREFIX/${mn}.header"; do
+				[ -f "$candidate" ] && { headerfile="$candidate"; break; }
+			done
+
+			sz=$($0 list-size "$url" 2>/dev/null)
+			[ -n "$sz" ] || sz=0
+			lines=0
+			file=""
+			header=""
+
+			if [ -n "$listfile" ]; then
+				lines=$(wc -l < "$listfile")
+				file="$listfile"
+			elif [ -n "$headerfile" ]; then
+				file="${headerfile%.header}.list"
+			fi
+
+			if [ -n "$headerfile" ]; then
+				header=$(awk 'BEGIN{ORS=""} {gsub(/%/, "%25"); gsub(/\t/, "%09"); gsub(/\r/, "%0D"); printf "%s%%0A", $0}' "$headerfile" 2>/dev/null)
+			fi
+
+			echo "$mn	$sz	$lines	$file	$header"
 		done
 		exit
 	fi
