@@ -2,7 +2,7 @@
 <!--
 	Tomato GUI
 	Copyright (C) 2007-2025 FreshTomato
-	ver="v2.74e - 04/26" # rs232
+	ver="v2.74d - 04/26" # rs232
 	https://www.freshtomato.org/
 	For use with Tomato Firmware only.
 	No part of this file may be used without permission.
@@ -191,29 +191,22 @@
 			}
 
 			.adblock-list-size {
-				position: relative;
 				display: inline-block;
 				cursor: default;
 				text-decoration: underline dotted;
 			}
 
-			.adblock-list-size:hover .adblock-list-tip {
-				display: block;
-			}
-
-			.adblock-list-tip {
+			#adblock-tooltip {
 				display: none;
-				position: absolute;
-				right: calc(100% + 10px);
-				top: 50%;
-				transform: translateY(-50%);
-				z-index: 1000;
+				position: fixed;
+				z-index: 9999;
 				max-width: 960px;
 				min-width: 560px;
 				padding: 8px 10px;
-				border: 1px solid #8899aa;
+				border: 1px solid rgba(127, 148, 166, 0.5);
 				border-radius: 4px;
-				background: #fff;
+				background: var(--tomato-panel-background, #fff);
+				color: var(--tomato-color, inherit);
 				box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
 				font-size: 11px;
 				line-height: 1.4;
@@ -222,7 +215,7 @@
 				pointer-events: none;
 			}
 
-			.adblock-list-tip pre {
+			#adblock-tooltip pre {
 				max-height: none;
 				margin: 6px 0 0;
 				overflow: visible;
@@ -320,22 +313,19 @@
 			}
 
 			function listSizeToView(value, md5) {
-				var text = String((value == null) ? '' : value), meta, tip;
+				var text = String((value == null) ? '' : value), meta;
 
 				if (text === '')
 					return '<img src="spin.svg" class="adblock-spinner adblock-spinner-cell" alt="">';
+
+				if (text === '-')
+					return '-';
 
 				meta = md5 ? listMeta[md5] : null;
 				if (!meta || ((!meta.file) && (!meta.header)))
 					return escapeHTML(text);
 
-				tip = '<span class="adblock-list-tip"><div><b>File</b>: ' + escapeHTML(meta.file || (md5 + '.list')) + '<\/div>'
-					+ '<div><b>Size</b>: ' + formatCount(meta.bytes || '0') + ' B<\/div>'
-					+ '<div><b>Lines</b>: ' + formatCount(meta.lines || '0') + '<\/div>'
-					+ (meta.header ? '<div><b>.header</b><\/div><pre>' + escapeHTML(meta.header) + '<\/pre>' : '')
-					+ '<\/span>';
-
-				return '<span class="adblock-list-size">' + escapeHTML(text) + tip + '<\/span>';
+				return '<span class="adblock-list-size" data-md5="' + escapeHTML(md5) + '">' + escapeHTML(text) + '<\/span>';
 			}
 
 			function setListSizeCell(row, value, md5) {
@@ -384,7 +374,7 @@
 			}
 
 			function adblockDeleteRow(row, done) {
-				var md5, meta, dialog, content, rect;
+				var md5, meta;
 
 				if (!row || !row._data) return;
 				md5 = listUrlToHash(row._data[1]);
@@ -397,15 +387,8 @@
 
 				deleteRow = row;
 				deleteDone = done;
-				dialog = E('adblock-delete-dialog');
-				content = E('content');
-				if (dialog && content) {
-					rect = content.getBoundingClientRect();
-					dialog.style.left = (rect.left + (rect.width / 2)) + 'px';
-					dialog.style.top = (window.innerHeight / 2) + 'px';
-				}
 				E('adblock-delete-mask').style.display = 'block';
-				dialog.style.display = 'block';
+				E('adblock-delete-dialog').style.display = 'block';
 			}
 
 			function adblockDeleteChoice(mode) {
@@ -415,7 +398,7 @@
 				E('adblock-delete-dialog').style.display = 'none';
 				E('adblock-delete-mask').style.display = 'none';
 
-				if (mode == 4) {
+				if (mode == 3) {
 					deleteRow = null;
 					deleteDone = null;
 					return;
@@ -435,13 +418,13 @@
 				cmdDelete.onCompleted = function (text, xml) {
 					cmdDelete = null;
 					updateListSizes();
-					if (mode == 1) deleteDone();
+					deleteDone();
 					deleteRow = null;
 					deleteDone = null;
 				}
 				cmdDelete.onError = function (x) {
 					cmdDelete = null;
-					if (mode == 1) deleteDone();
+					deleteDone();
 					deleteRow = null;
 					deleteDone = null;
 				}
@@ -854,7 +837,8 @@
 								bytes: parts[1],
 								lines: parts[2] || '0',
 								file: decodeListInfoField(parts[3] || ''),
-								header: decodeListInfoField(parts[4] || '')
+								header: decodeListInfoField(parts[4] || ''),
+								mtime: decodeListInfoField(parts[5] || '')
 							};
 						}
 					}
@@ -942,6 +926,53 @@
 				textarea.value = sortedDomains.join(delimiter).trim();
 			}
 
+			function eventHandler() {
+				var tooltip = E('adblock-tooltip');
+				if (!tooltip) return;
+
+				document.addEventListener('mouseover', function (e) {
+					var t = e.target;
+					while (t && t.nodeType === 1) {
+						if (t.className && ((' ' + t.className + ' ').indexOf(' adblock-list-size ') >= 0)) {
+							var md5 = t.getAttribute('data-md5');
+							if (md5 && listMeta[md5]) {
+								var meta = listMeta[md5];
+								tooltip.innerHTML = '<div><b>File<\/b>: ' + escapeHTML(meta.file || (md5 + '.list')) + '<\/div>'
+									+ (meta.mtime ? '<div><b>Date<\/b>: ' + escapeHTML(meta.mtime) + '<\/div>' : '')
+									+ '<div><b>Size<\/b>: ' + formatCount(meta.bytes || '0') + ' B<\/div>'
+									+ '<div><b>Lines<\/b>: ' + formatCount(meta.lines || '0') + '<\/div>'
+									+ (meta.header ? '<div><b>.header<\/b><\/div><pre>' + escapeHTML(meta.header) + '<\/pre>' : '');
+								tooltip.style.display = 'block';
+								var rect = t.getBoundingClientRect();
+								var tw = tooltip.offsetWidth || 560;
+								var th = tooltip.offsetHeight;
+								var top = rect.top + rect.height / 2 - th / 2;
+								var left = rect.left - tw - 10;
+								if (left < 4) left = rect.right + 10;
+								if (top < 4) top = 4;
+								var maxTop = window.innerHeight - th - 4;
+								if (top > maxTop) top = maxTop;
+								tooltip.style.top = Math.max(4, top) + 'px';
+								tooltip.style.left = Math.max(4, left) + 'px';
+							}
+							return;
+						}
+						t = t.parentNode;
+					}
+				});
+
+				document.addEventListener('mouseout', function (e) {
+					var t = e.target;
+					while (t && t.nodeType === 1) {
+						if (t.className && ((' ' + t.className + ' ').indexOf(' adblock-list-size ') >= 0)) {
+							tooltip.style.display = 'none';
+							return;
+						}
+						t = t.parentNode;
+					}
+				});
+			}
+
 		</script>
 </head>
 
@@ -949,12 +980,11 @@
 	<form id="t_fom" method="post" action="tomato.cgi">
 		<div id="adblock-delete-mask"></div>
 		<div id="adblock-delete-dialog">
-			<p>Delete?</p>
+			<p>Delete list:</p>
 			<div id="adblock-delete-buttons">
-				<input type="button" value="Blacklist &amp; File" onclick="adblockDeleteChoice(1)">
-				<input type="button" value="Blacklist" onclick="adblockDeleteChoice(2)">
-				<input type="button" value="File" onclick="adblockDeleteChoice(3)">
-				<input type="button" value="Cancel" onclick="adblockDeleteChoice(4)">
+				<input type="button" value="Remove File and list" onclick="adblockDeleteChoice(1)">
+				<input type="button" value="Remove list only" onclick="adblockDeleteChoice(2)">
+				<input type="button" value="Cancel" onclick="adblockDeleteChoice(3)">
 			</div>
 		</div>
 		<table id="container">
@@ -1195,6 +1225,7 @@
 			</tr>
 		</table>
 	</form>
+	<div id="adblock-tooltip"></div>
 	<script>earlyInit();</script>
 </body>
 
