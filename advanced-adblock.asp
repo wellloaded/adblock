@@ -436,7 +436,7 @@
 				E('adblock-delete-dialog').style.display = 'none';
 				E('adblock-delete-mask').style.display = 'none';
 
-				if (mode == 3) {
+				if (mode == 4) {
 					deleteRow = null;
 					deleteDone = null;
 					return;
@@ -456,13 +456,13 @@
 				cmdDelete.onCompleted = function (text, xml) {
 					cmdDelete = null;
 					updateListSizes();
-					deleteDone();
+					if (mode != 3) deleteDone();
 					deleteRow = null;
 					deleteDone = null;
 				}
 				cmdDelete.onError = function (x) {
 					cmdDelete = null;
-					deleteDone();
+					if (mode != 3) deleteDone();
 					deleteRow = null;
 					deleteDone = null;
 				}
@@ -1027,11 +1027,12 @@
 	<form id="t_fom" method="post" action="tomato.cgi">
 		<div id="adblock-delete-mask"></div>
 		<div id="adblock-delete-dialog">
-			<p>Delete list:</p>
+			<p align=center>Delete:</p>
 			<div id="adblock-delete-buttons">
-				<input type="button" value="Remove Files and list" onclick="adblockDeleteChoice(1)">
-				<input type="button" value="Remove list only" onclick="adblockDeleteChoice(2)">
-				<input type="button" value="Cancel" onclick="adblockDeleteChoice(3)">
+				<input type="button" value="Files & List" onclick="adblockDeleteChoice(1)">
+				<input type="button" value="Files only" onclick="adblockDeleteChoice(3)">
+				<input type="button" value="List only" onclick="adblockDeleteChoice(2)">
+				<input type="button" value="Cancel" onclick="adblockDeleteChoice(4)">
 			</div>
 		</div>
 		<table id="container">
