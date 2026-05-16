@@ -2,7 +2,7 @@
 <!--
 	Tomato GUI
 	Copyright (C) 2007-2025 FreshTomato
-	ver="v2.74d - 04/26" # rs232
+	ver="v2.74f - 05/26" # rs232
 	https://www.freshtomato.org/
 	For use with Tomato Firmware only.
 	No part of this file may be used without permission.
@@ -97,7 +97,7 @@
 				align-items: stretch;
 				box-sizing: border-box;
 				height: 2px;
-				margin-top: 6px;
+				margin-top: 2px;
 				border-radius: 2px;
 				background: rgba(127, 148, 166, 0.22);
 				overflow: hidden;
@@ -118,11 +118,11 @@
 			}
 
 			.adblock-bar span.buffers {
-				background: #f57cd7;
+				background: #e3a9d5;
 			}
 
 			.adblock-bar span.cache {
-				background: #2cb259;
+				background: #a7d3b6;
 			}
 
 			/* buffer/cache specific colours (kept simple) */
@@ -174,8 +174,35 @@
 				padding-right: 0;
 			}
 
+			.adblock-status-table td:first-child {
+				width: 1%;
+				white-space: nowrap;
+				padding-right: 10px;
+			}
+
+			.adblock-status-table td:first-child input[type="button"] {
+				width: 11em;
+				box-sizing: border-box;
+			}
+
+			.adblock-status-table .adblock-td2 {
+				width: 100%;
+			}
+
+			.adblock-status-table .status-result {
+				min-width: 24em;
+				min-height: 14px;
+				text-align: left;
+				font: inherit !important;
+			}
+
 			.adblock-status-head {
 				text-align: left;
+			}
+
+			#adblock-controls {
+				display: inline-block;
+				width: auto;
 			}
 
 			#adblock-grid table {
@@ -483,7 +510,7 @@
 			function statusBar(value) {
 				var n = parseInt(value, 10);
 
-				if (isNaN(n) || (n <= 0)) return '';
+				if (isNaN(n) || (n < 0)) n = 0;
 				if (n > 100) n = 100;
 				return '<div class="adblock-bar"><span class="app" style="width:' + n + '%"><\/span><\/div>';
 			}
@@ -553,7 +580,7 @@
 				this.init('adblock-grid', '', 50, [
 					{ type: 'checkbox', prefix: '<div class="centered">', suffix: '<\/div>' },
 					{ type: 'text', maxlen: 130 },
-					{ type: 'display', value: '', attrib: 'style="display:block;margin:0 auto"' },
+					{ type: 'custom', custom: '<span class="fi3" style="display:block;margin:0 auto"><\/span>' },
 					{ type: 'text', maxlen: 40 }
 				]);
 				this.headerSet(['On', 'Blacklist URL', 'MB', 'Description']);
@@ -678,11 +705,12 @@
 						var mode = (owner == 'root') ? 'bad' : 'ok';
 						var ownerDisplay = statusBadge(owner, mode);
 						var restarts = escapeHTML(String((s.restarts || '0')));
-						return '<tr><th>dnsmasq<\/th><td>' + ownerDisplay + ' - <span class="adblock-note-inline">Restarts today: ' + restarts + '<\/span><\/td><\/tr>';
+						return '<tr><th>dnsmasq<\/th><td>' + ownerDisplay + '-<span class="adblock-note-inline">Restarts today: ' + restarts + '<\/span><\/td><\/tr>';
 					})()
 					+ (function () {
-						// Adblock errors and last run/calls — render Errors as a badge (green when 0, red otherwise)
+						// Adblock errors and warnings — Warnings: amber/green, Errors: red/green
 						var errs = String(s.last_errors || '0');
+						var warns = String(s.last_warns || '0');
 						function fmtLastRuntime(rt) {
 							if (!rt) return 'N/A';
 							var h = 0, m = 0, sec = 0;
@@ -697,8 +725,10 @@
 						var calls = String(s.calls || '0');
 						// choose badge colour: ok when zero, bad otherwise
 						var errMode = (parseInt(errs.replace(/[^0-9-]/g, ''), 10) === 0) ? 'ok' : 'bad';
+						var warnMode = (parseInt(warns.replace(/[^0-9-]/g, ''), 10) === 0) ? 'ok' : 'warn';
 						var errBadge = statusBadge('Errors: ' + errs, errMode);
-						var html = '<tr><th>Adblock<\/th><td>Last run:  ' + escapeHTML(lastRunStr) + ' - ' + escapeHTML(calls) + ' calls today - ' + errBadge + '<\/td><\/tr>';
+						var warnBadge = statusBadge('Warnings: ' + warns, warnMode);
+						var html = '<tr><th>Adblock<\/th><td>Last run:  ' + escapeHTML(lastRunStr) + ' - ' + escapeHTML(calls) + ' calls today - ' + warnBadge + ' - ' + errBadge + '<\/td><\/tr>';
 						return html;
 					})()
 					+ (function () {
@@ -802,18 +832,17 @@
 			}
 
 			function adblockStatus() {
-				if (cmdStatus)
-					return;
+				if (cmdStatus) return;
 
 				cmdStatus = new XmlHttp();
 				cmdStatus.onCompleted = function (text, xml) {
 					eval(text);
 					displayStatus();
 					cmdStatus = null;
-				}
+				};
 				cmdStatus.onError = function (x) {
 					cmdStatus = null;
-				}
+				};
 				var c = '/usr/sbin/adblock status-data';
 				cmdStatus.post('shell.cgi', 'action=execute&command=' + escapeCGI(c.replace(/\r/g, '')));
 			}
@@ -1138,7 +1167,7 @@
 
 
 								<tr>
-									<td colspan="3">
+									<td colspan="3" align="right">
 										<div id="adblock-controls">
 											<script>genStdRefresh(1, 3, 'ref.toggle()')</script>
 										</div>
