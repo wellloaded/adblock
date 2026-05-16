@@ -2,7 +2,7 @@
 <!--
 	Tomato GUI
 	Copyright (C) 2007-2025 FreshTomato
-	ver="v2.74f - 05/26" # rs232
+	ver="v2.74g - 05/26" # rs232
 	https://www.freshtomato.org/
 	For use with Tomato Firmware only.
 	No part of this file may be used without permission.
@@ -288,7 +288,7 @@
 		<script src="md5.js?rel=<% version(); %>"></script>
 		<script>
 
-			//	<% nvram("adblock_enable,adblock_blacklist,adblock_blacklist_custom,adblock_whitelist,adblock_path,adblock_limit,adblock_logs"); %>
+			//	<% nvram("adblock_enable,adblock_blacklist,adblock_blacklist_custom,adblock_whitelist,adblock_path,adblock_limit,adblock_logs,adblock_target"); %>
 
 			var cprefix = 'advanced_adblock';
 			var adblockg = new TomatoGrid();
@@ -414,8 +414,16 @@
 
 				deleteRow = row;
 				deleteDone = done;
+
+				var scrollY = window.pageYOffset || document.documentElement.scrollTop;
+				var vCenter = scrollY + (window.innerHeight / 2);
+
+				var dlg = E('adblock-delete-dialog');
+				dlg.style.position = 'absolute';
+				dlg.style.top = vCenter + 'px';
+
 				E('adblock-delete-mask').style.display = 'block';
-				E('adblock-delete-dialog').style.display = 'block';
+				dlg.style.display = 'block';
 			}
 
 			function adblockDeleteChoice(mode) {
@@ -550,6 +558,8 @@
 			function verifyFields(focused, quiet) {
 				var ok = 1;
 				cookie.set(cprefix + '_refresh', adblock_refresh);
+				var e = E('_f_adblock_target').value == '3';
+				elem.display('_f_adblock_target_custom', e);
 
 				return ok;
 			}
@@ -605,6 +615,11 @@
 				fom.adblock_logs.value = fom.f_adblock_logs.value;
 				fom.adblock_limit.value = mbToBytes(fom.f_adblock_limit.value);
 				fom.adblock_path.value = fom.f_adblock_path.value.replace(/\/+$/, '');
+				if (fom.f_adblock_target.value == '3') {
+					fom.adblock_target.value = '3,' + fom.f_adblock_target_custom.value;
+				} else {
+					fom.adblock_target.value = fom.f_adblock_target.value;
+				}
 				fom.adblock_blacklist.value = blacklist;
 				form.submit(fom, 1);
 				setTimeout(function () { adblockStatus(); }, 2000);
@@ -1044,6 +1059,7 @@
 					<input type="hidden" name="adblock_logs">
 					<input type="hidden" name="adblock_path">
 					<input type="hidden" name="adblock_limit">
+					<input type="hidden" name="adblock_target">
 					<input type="hidden" name="adblock_blacklist">
 
 					<!-- / / / -->
@@ -1053,9 +1069,15 @@
 						<script>
 							createFieldTable('', [
 								{ title: 'Enable', name: 'f_adblock_enable', type: 'checkbox', value: nvram.adblock_enable != '0' },
-								{ title: 'Max Log Level', indent: 2, name: 'f_adblock_logs', type: 'select', options: [[0, 'Only Basic'], [3, '3 Error (default)'], [4, '4 Warning'], [5, '5 Notification'], [6, '6 Info'], [7, '7 Debug + trace mode']], value: nvram.adblock_logs },
+								{ title: 'Max Log Level', indent: 2, name: 'f_adblock_logs', type: 'select', options: [[0, 'Only Basic'], [3, '3 Error *'], [4, '4 Warning'], [5, '5 Notification'], [6, '6 Info'], [7, '7 Debug + trace mode']], value: nvram.adblock_logs },
 								{ title: 'Blockfile size limit', indent: 2, name: 'f_adblock_limit', type: 'text', placeholder: 'empty = reset', maxlen: 32, size: 15, suffix: '&nbsp;<small>MB<\/small>', value: bytesToMB(nvram.adblock_limit) },
-								{ title: 'Custom path (optional)', indent: 2, name: 'f_adblock_path', type: 'text', placeholder: 'empty = /tmp', maxlen: 64, size: 15, suffix: '<small>/adblock/<\/small>', value: nvram.adblock_path }
+								{ title: 'Custom path (optional)', indent: 2, name: 'f_adblock_path', type: 'text', placeholder: 'empty = /tmp', maxlen: 64, size: 15, suffix: '<small>/adblock/</small>', value: nvram.adblock_path },
+								{
+									title: 'Target', indent: 2, multi: [
+										{ name: 'f_adblock_target', type: 'select', options: [['0', 'NX *'], ['1', '0.0.0.0'], ['2', '127.0.0.1'], ['3', 'Custom']], value: String(nvram.adblock_target || '0').split(',')[0] },
+										{ name: 'f_adblock_target_custom', type: 'text', maxlen: 15, size: 17, value: String(nvram.adblock_target || '0').split(',')[1] || '' }
+									]
+								}
 							]);
 						</script>
 					</div>
