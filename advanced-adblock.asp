@@ -64,7 +64,7 @@
 			.adblock-status-view td {
 				padding: 4px 0;
 				text-align: left;
-				vertical-align: top;
+				vertical-align: middle;
 				border-top: 1px solid rgba(127, 148, 166, 0.14);
 			}
 
@@ -161,7 +161,10 @@
 				display: block;
 			}
 
-			/* align the middle label column to the right */
+			.adblock-status-table td {
+				vertical-align: middle;
+			}
+
 			.adblock-status-table .adblock-label {
 				text-align: right;
 				padding-right: 8px;
@@ -1026,7 +1029,7 @@
 		<div id="adblock-delete-dialog">
 			<p>Delete list:</p>
 			<div id="adblock-delete-buttons">
-				<input type="button" value="Remove File and list" onclick="adblockDeleteChoice(1)">
+				<input type="button" value="Remove Files and list" onclick="adblockDeleteChoice(1)">
 				<input type="button" value="Remove list only" onclick="adblockDeleteChoice(2)">
 				<input type="button" value="Cancel" onclick="adblockDeleteChoice(3)">
 			</div>
@@ -1069,7 +1072,7 @@
 						<script>
 							createFieldTable('', [
 								{ title: 'Enable', name: 'f_adblock_enable', type: 'checkbox', value: nvram.adblock_enable != '0' },
-								{ title: 'Max Log Level', indent: 2, name: 'f_adblock_logs', type: 'select', options: [[0, 'Only Basic'], [3, '3 Error *'], [4, '4 Warning'], [5, '5 Notification'], [6, '6 Info'], [7, '7 Debug + trace mode']], value: nvram.adblock_logs },
+								{ title: 'Max Log Level', indent: 2, name: 'f_adblock_logs', type: 'select', options: [[0, 'Only Basic'], [3, '3 Error *'], [4, '4 Warning'], [5, '5 Notification'], [6, '6 Info'], [7, '7 Debug + Trace']], value: nvram.adblock_logs },
 								{ title: 'Blockfile size limit', indent: 2, name: 'f_adblock_limit', type: 'text', placeholder: 'empty = reset', maxlen: 32, size: 15, suffix: '&nbsp;<small>MB<\/small>', value: bytesToMB(nvram.adblock_limit) },
 								{ title: 'Custom path (optional)', indent: 2, name: 'f_adblock_path', type: 'text', placeholder: 'empty = /tmp', maxlen: 64, size: 15, suffix: '<small>/adblock/</small>', value: nvram.adblock_path },
 								{
@@ -1121,68 +1124,68 @@
 					<div class="section">
 						<div class="fields">
 							<table class="adblock-status-table">
-								<tr valign="top">
-									<td valign="top">
+								<tr>
+									<td>
 										<input type="button" value="▶️ Load" id="adblock-start"
 											onclick="adblockMe('start');">
 									</td>
-									<td class="adblock-label" valign="top" colspan="2">
+									<td class="adblock-label" colspan="2">
 										<div id="adblock-status-1" class="status-result"></div>
 									</td>
 								</tr>
-								<tr valign="top">
-									<td valign="top"><input type="button" value="⏏️ Unload" id="adblock-stop"
+								<tr>
+									<td><input type="button" value="⏏️ Unload" id="adblock-stop"
 											onclick="adblockMe('stop');"></td>
-									<td class="adblock-label" valign="top">Version</td>
-									<td class="adblock-td2" valign="top">
+									<td class="adblock-label">Version</td>
+									<td class="adblock-td2">
 										<div id="adblock-status-2" class="status-result"></div>
 									</td>
 								</tr>
-								<tr valign="top">
-									<td valign="top"><input type="button" value="🔄 Update" id="adblock-update"
+								<tr>
+									<td><input type="button" value="🔄 Update" id="adblock-update"
 											onclick="adblockMe('update');"></td>
-									<td class="adblock-label" valign="top">Activity</td>
-									<td class="adblock-td2" valign="top">
+									<td class="adblock-label">Activity</td>
+									<td class="adblock-td2">
 										<div id="adblock-status-3" class="status-result"></div>
 									</td>
 								</tr>
-								<tr valign="top">
-									<td valign="top"><input type="button" value="♻️ Reset limit" id="adblock-reset"
+								<tr>
+									<td><input type="button" value="♻️ Reset limit" id="adblock-reset"
 											onclick="adblockMe('reset');"></td>
-									<td class="adblock-label" valign="top">dnsmasq</td>
-									<td class="adblock-td2" valign="top">
+									<td class="adblock-label">dnsmasq</td>
+									<td class="adblock-td2">
 										<div id="adblock-status-4" class="status-result"></div>
 									</td>
 								</tr>
-								<tr valign="top">
-									<td valign="top"><input type="button" value="🧹 Clear all files" id="adblock-clear"
+								<tr>
+									<td><input type="button" value="🧹 Clear all files" id="adblock-clear"
 											onclick="adblockMe('clear');"></td>
-									<td class="adblock-label" valign="top">Adblock</td>
-									<td class="adblock-td2" valign="top">
+									<td class="adblock-label">Adblock</td>
+									<td class="adblock-td2">
 										<div id="adblock-status-5" class="status-result"></div>
 									</td>
 								</tr>
-								<tr valign="top">
-									<td valign="top"><input type="button" value="📷 Snapshot" id="adblock-snapshot"
+								<tr>
+									<td><input type="button" value="📷 Snapshot" id="adblock-snapshot"
 											onclick="adblockMe('snapshot');"></td>
-									<td class="adblock-label" valign="top">Memory</td>
-									<td class="adblock-td2" valign="top">
+									<td class="adblock-label">Memory</td>
+									<td class="adblock-td2">
 										<div id="adblock-status-6" class="status-result"></div>
 									</td>
 								</tr>
-								<tr valign="top">
-									<td valign="top"><input type="button" value="☑️ Enable only" id="adblock-enable"
+								<tr>
+									<td><input type="button" value="☑️ Enable only" id="adblock-enable"
 											onclick="adblockMe('enable');"></td>
-									<td class="adblock-label" valign="top">Blockfile</td>
-									<td class="adblock-td2" valign="top">
+									<td class="adblock-label">Blockfile</td>
+									<td class="adblock-td2">
 										<div id="adblock-status-7" class="status-result"></div>
 									</td>
 								</tr>
-								<tr valign="top">
-									<td valign="top"><input type="button" value="⬜ Disable only" id="adblock-disable"
+								<tr>
+									<td><input type="button" value="⬜ Disable only" id="adblock-disable"
 											onclick="adblockMe('disable');"></td>
-									<td class="adblock-label" valign="top">Trace</td>
-									<td class="adblock-td2" valign="top">
+									<td class="adblock-label">Trace</td>
+									<td class="adblock-td2">
 										<div id="adblock-status-8" class="status-result"></div>
 									</td>
 								</tr>
